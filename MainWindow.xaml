@@ -1,0 +1,123 @@
+﻿<Window x:Class="Caterpillar.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Caterpillar.ViewModels"
+        Title="Caterpillar - Backtracking vs Q-Learning" Height="700" Width="1100" WindowState="Maximized">
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+
+    <Grid Margin="10">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="320" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Left: Backtracking field -->
+        <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="1" Margin="0,0,10,0" Padding="6">
+            <DockPanel>
+                <TextBlock Text="Backtracking" FontWeight="Bold" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+                <ItemsControl ItemsSource="{Binding CellsBack}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Rows="{Binding DataContext.BoardSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                         Columns="{Binding DataContext.BoardSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Width="{Binding DataContext.CellSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  Height="{Binding DataContext.CellSize, RelativeSource={RelativeSource AncestorType=Window}}" Margin="1">
+                                <Rectangle Fill="{Binding CellColor}" RadiusX="2" RadiusY="2" Stroke="Black" StrokeThickness="0.5"/>
+                                <!-- Apple as circle -->
+                                <Ellipse Width="10" Height="10" Fill="Red" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding IsApple, Converter={StaticResource BoolToVis}}" />
+                                <!-- Eyes on head -->
+                                <Ellipse Width="6" Height="6" Fill="White" HorizontalAlignment="Left" Margin="6,6,0,0" Visibility="{Binding IsHead, Converter={StaticResource BoolToVis}}" />
+                                <Ellipse Width="6" Height="6" Fill="White" HorizontalAlignment="Right" Margin="0,6,6,0" Visibility="{Binding IsHead, Converter={StaticResource BoolToVis}}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- per-field stats moved to Summary in center -->
+            </DockPanel>
+        </Border>
+
+        <!-- Center: controls -->
+        <StackPanel Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Top">
+            <GroupBox Header="Field settings" Width="300" Margin="0,0,0,10">
+                <StackPanel Margin="6">
+                    <TextBlock Text="Board size (N):"/>
+                    <TextBox Text="{Binding BoardSize, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="Apples:" Margin="0,6,0,0"/>
+                    <TextBox Text="{Binding ApplesCount, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="Steps limit:" Margin="0,6,0,0"/>
+                    <TextBox Text="{Binding StepsLimit, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="Animation speed (ms):" Margin="0,6,0,0"/>
+                    <TextBox Text="{Binding AnimationSpeed, UpdateSourceTrigger=PropertyChanged}" />
+                    <Button Content="Generate Fields" Command="{Binding GenerateBoardCommand}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Algorithms" Width="300" Margin="0,0,0,10">
+                <StackPanel Margin="6">
+                    <Button Content="Start Backtracking" Command="{Binding StartBacktrackingCommand}" />
+                    <!--<Button Content="Train Q-Learning" Command="{Binding TrainQLearningCommand}" Margin="0,6,0,0" />-->
+                    <Button Content="Start Q-Learning" Command="{Binding StartQLearningCommand}" Margin="0,6,0,0" />
+                    <Button Content="Start Both" Command="{Binding StartBothCommand}" Margin="0,6,0,0" />
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="Summary" Width="300">
+                <StackPanel Margin="6">
+                    <TextBlock Text="Left (Backtracking):" FontWeight="Bold" />
+                    <TextBlock Text="{Binding AlgorithmTimeLeft}" />
+                    <TextBlock Text="{Binding DecisionTimeLeft}" />
+                    <TextBlock Text="{Binding PlannedApplesLeft, StringFormat=Planned apples: {0}}" />
+                    <TextBlock Text="{Binding ApplesEatenLeft, StringFormat=Apples eaten: {0}}" />
+                    <TextBlock Text="{Binding StepsTakenLeft, StringFormat=Steps: {0}}" />
+                    <TextBlock Text="" />
+                    <TextBlock Text="Right (Q-Learning):" FontWeight="Bold" />
+                    <TextBlock Text="{Binding AlgorithmTimeRight}" />
+                    <TextBlock Text="{Binding DecisionTimeRight}" />
+                    <TextBlock Text="{Binding ApplesEatenRight, StringFormat=Apples eaten: {0}}" />
+                    <TextBlock Text="{Binding StepsTakenRight, StringFormat=Steps: {0}}" />
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
+
+        <!-- Right: Q-Learning field -->
+        <Border Grid.Column="2" BorderBrush="Gray" BorderThickness="1" Margin="10,0,0,0" Padding="6">
+            <DockPanel>
+                <TextBlock Text="Q-Learning" FontWeight="Bold" DockPanel.Dock="Top" Margin="0,0,0,6"/>
+                <ItemsControl ItemsSource="{Binding CellsRight}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Rows="{Binding DataContext.BoardSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                         Columns="{Binding DataContext.BoardSize, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Width="{Binding DataContext.CellSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  Height="{Binding DataContext.CellSize, RelativeSource={RelativeSource AncestorType=Window}}" Margin="1">
+                                <Rectangle Fill="{Binding CellColor}" RadiusX="2" RadiusY="2" Stroke="Black" StrokeThickness="0.5"/>
+                                <!-- Apple as circle -->
+                                <Ellipse Width="10" Height="10" Fill="Red" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding IsApple, Converter={StaticResource BoolToVis}}" />
+                                <!-- Eyes on head -->
+                                <Ellipse Width="6" Height="6" Fill="White" HorizontalAlignment="Left" Margin="6,6,0,0" Visibility="{Binding IsHead, Converter={StaticResource BoolToVis}}" />
+                                <Ellipse Width="6" Height="6" Fill="White" HorizontalAlignment="Right" Margin="0,6,6,0" Visibility="{Binding IsHead, Converter={StaticResource BoolToVis}}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- per-field stats moved to Summary in center -->
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>
