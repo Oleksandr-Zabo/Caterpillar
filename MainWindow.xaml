@@ -83,6 +83,7 @@
                     <TextBlock Text="" />
                     <TextBlock Text="Right (Q-Learning):" FontWeight="Bold" />
                     <TextBlock Text="{Binding AlgorithmTimeRight}" />
+                    <TextBlock Text="{Binding TableTrainTimeRight}" />
                     <TextBlock Text="{Binding DecisionTimeRight}" />
                     <TextBlock Text="{Binding ExecutionTimeRight}" />
                     <TextBlock Text="{Binding ApplesEatenRight, StringFormat=Apples eaten: {0}}" />

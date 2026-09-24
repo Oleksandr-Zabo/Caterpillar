@@ -379,12 +379,6 @@ namespace Caterpillar.Algorithms
             }
 
             var fruitMove = FindNextFruitMove(board, currentHead);
-            if (fruitMove.HasValue)
-            {
-                var routeCandidate = neighbors.FirstOrDefault(n => n.pos == fruitMove.Value);
-                if (routeCandidate != default)
-                    return routeCandidate.pos;
-            }
 
             var currentFruitDistance = FindNearestFruitDistance(board);
             // The persisted Q-table is only a tie-breaker. Runtime geometry must
@@ -408,8 +402,11 @@ namespace Caterpillar.Algorithms
                 if (fruitDistance != int.MaxValue)
                     val -= fruitDistance * 100.0;
                 val += Math.Clamp(qvals[n.actionIdx], -5.0, 5.0);
+                if (fruitMove.HasValue && n.pos == fruitMove.Value)
+                    val += 75.0;
                 if (_runtimeVisitCounts.TryGetValue(n.pos, out var visits)) val -= 50.0 * visits;
                 if (n.actionIdx == Opposite(previousAction)) val -= 10.0;
+                val += _rng.NextDouble() * 2.0;
                 if (val > best)
                 {
                     best = val; bestList.Clear(); bestList.Add(n);

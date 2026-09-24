@@ -35,6 +35,7 @@ namespace Caterpillar.ViewModels
         private string _decTimeRight = "";
         private string _execTimeLeft = "";
         private string _execTimeRight = "";
+        private string _tableTrainTimeRight = "";
 
         public MainViewModel()
         {
@@ -95,6 +96,7 @@ namespace Caterpillar.ViewModels
         public string DecisionTimeRight { get => _decTimeRight; private set => Set(ref _decTimeRight, value); }
         public string ExecutionTimeLeft { get => _execTimeLeft; private set => Set(ref _execTimeLeft, value); }
         public string ExecutionTimeRight { get => _execTimeRight; private set => Set(ref _execTimeRight, value); }
+        public string TableTrainTimeRight { get => _tableTrainTimeRight; private set => Set(ref _tableTrainTimeRight, value); }
         private int _applesEatenLeft;
         private int _plannedApplesLeft;
         private int _applesEatenRight;
@@ -136,6 +138,7 @@ namespace Caterpillar.ViewModels
             DecisionTimeRight = "Decision time: 0 ms";
             ExecutionTimeLeft = "Executing: 0 ms";
             ExecutionTimeRight = "Executing: 0 ms";
+            TableTrainTimeRight = "Table Train: 0 ms";
             ApplesEatenLeft = PlannedApplesLeft = ApplesEatenRight = 0;
             StepsTakenLeft = StepsTakenRight = 0;
 
@@ -192,13 +195,15 @@ namespace Caterpillar.ViewModels
 
         private async Task TrainQLearningAsync(CancellationToken cancellationToken)
         {
-            // Use trainer to run several trainings and save best q-table
-            var trainer = new QLearningTrainer();
+            // Prepare one table only. PrepareAsync loads the cached table when it
+            // exists, otherwise it trains and persists a new one.
+            var agent = new QLearningAgent();
             var sw = Stopwatch.StartNew();
-            await Task.Run(() => trainer.RunAndSaveBestAsync(_boardQL, StepsLimit, runs: 3,
-                progress: new System.Progress<string>(s => { }), cancellationToken), cancellationToken);
+            await Task.Run(() => agent.PrepareAsync(_boardQL, StepsLimit,
+                new System.Progress<string>(s => { }), cancellationToken), cancellationToken);
             sw.Stop();
-            AlgorithmTimeRight = $"Train: {sw.ElapsedMilliseconds} ms";
+            TableTrainTimeRight = $"Table Train: {sw.ElapsedMilliseconds} ms";
+            AlgorithmTimeRight = "Train: table ready";
         }
 
         private async Task StartBacktrackingAsync()
@@ -292,12 +297,13 @@ namespace Caterpillar.ViewModels
                 ResetQLearningBoard();
                 var agent = new QLearningAgent();
                 // Run training/loading on background thread to avoid UI freeze
-                var swTrain = Stopwatch.StartNew();
+                var swTableTrain = Stopwatch.StartNew();
                 var cancellationToken = _operationCts.Token;
                 await Task.Run(() => agent.PrepareAsync(_boardQL, StepsLimit,
                     new System.Progress<string>(s => { }), cancellationToken), cancellationToken);
-                swTrain.Stop();
-                AlgorithmTimeRight = $"Train: {swTrain.ElapsedMilliseconds} ms";
+                swTableTrain.Stop();
+                TableTrainTimeRight = $"Table Train: {swTableTrain.ElapsedMilliseconds} ms";
+                var swTrain = Stopwatch.StartNew();
 
                 long decisionTicks = 0;
                 int applesEaten = 0;
@@ -317,6 +323,7 @@ namespace Caterpillar.ViewModels
                     if (next == currentHead || !_boardQL.IsValidMove(next))
                     {
                         _timerRight.Stop();
+                swTrain.Stop();
                         AlgorithmTimeRight = $"Train: {swTrain.ElapsedMilliseconds} ms";
                         DecisionTimeRight = $"Decision time: {(decisionTicks * 1000.0 / Stopwatch.Frequency):F2} ms";
                         ExecutionTimeRight = $"Executing: {_timerRight.ElapsedMilliseconds} ms";

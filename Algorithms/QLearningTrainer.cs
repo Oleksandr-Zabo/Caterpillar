@@ -30,7 +30,7 @@ namespace Caterpillar.Algorithms
                     sw.Stop();
 
                     // evaluate agent on multiple episodes and average score + steps
-                    int evalEpisodes = 6;
+                    int evalEpisodes = 20;
                     double totalApples = 0;
                     double totalSteps = 0;
                     for (int e = 0; e < evalEpisodes; e++)
@@ -71,7 +71,7 @@ namespace Caterpillar.Algorithms
                     if (score > bestScore)
                     {
                         bestScore = score;
-                        bestPath = $"best_qtable_v3_{board.Rows}x{board.Cols}_{board.ApplesRemaining}.json";
+                        bestPath = $"best_qtable_v2_{board.Rows}x{board.Cols}_{board.ApplesRemaining}.json";
                         agent.SaveToFile(bestPath);
                     }
                 }
@@ -86,7 +86,7 @@ namespace Caterpillar.Algorithms
                 // fallback: train one agent and save
                 var fallback = new QLearningAgent();
                 await fallback.PrepareAsync(board, stepsLimit, progress ?? new Progress<string>(s => { }), cancellationToken);
-                bestPath = $"best_qtable_v3_{board.Rows}x{board.Cols}_{board.ApplesRemaining}.json";
+                bestPath = $"best_qtable_v2_{board.Rows}x{board.Cols}_{board.ApplesRemaining}.json";
                 fallback.SaveToFile(bestPath);
             }
 
