@@ -6,6 +6,7 @@ namespace Caterpillar.Models
     {
         Empty,
         Apple,
+        Grape,
         Head,
         Tail
     }
@@ -18,11 +19,12 @@ namespace Caterpillar.Models
 
         public Brush GetBrush()
         {
-            // Field is green, apple red, tail darker green, head darkest green
+            // Fruit cells keep a green field background; fruit is drawn separately in XAML.
             return Type switch
             {
                 CellType.Empty => Brushes.PaleGreen,
-                CellType.Apple => Brushes.Red,
+                CellType.Apple => Brushes.PaleGreen,
+                CellType.Grape => Brushes.PaleGreen,
                 CellType.Head => Brushes.DarkGreen,
                 CellType.Tail => Brushes.Green,
                 _ => Brushes.PaleGreen,

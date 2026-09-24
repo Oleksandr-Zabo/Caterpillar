@@ -15,6 +15,15 @@ namespace Caterpillar.Models
             }
         }
 
+        public Caterpillar(IEnumerable<(int x, int y)> segments)
+        {
+            foreach (var segment in segments)
+                _segments.AddLast(segment);
+
+            if (_segments.Count == 0)
+                throw new System.ArgumentException("Caterpillar must contain at least one segment.", nameof(segments));
+        }
+
         public (int x, int y) Head => _segments.First.Value;
 
         public IEnumerable<(int x, int y)> Segments => _segments;

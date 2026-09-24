@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
 using Caterpillar.DataStructures;
 using Caterpillar.Models;
 
@@ -13,13 +14,15 @@ namespace Caterpillar.Algorithms
         public string Name => "Backtracking";
         private Queue<(int x, int y)> _plan = new();
         private int _plannedApples = 0;
+        private readonly HashSet<(int x, int y)> _runtimeVisited = new();
 
         public int PlannedApples => _plannedApples;
 
-        public Task PrepareAsync(GameBoard board, int stepsLimit, System.IProgress<string> progress)
+        public Task PrepareAsync(GameBoard board, int stepsLimit, System.IProgress<string> progress, CancellationToken cancellationToken = default)
         {
             // Replace expensive DFS with greedy shortest-path planning to nearest apples.
             _plan.Clear();
+            _runtimeVisited.Clear();
 
             int rows = board.Rows;
             int cols = board.Cols;
@@ -28,11 +31,11 @@ namespace Caterpillar.Algorithms
             var apples = new bool[rows, cols];
             for (int r = 0; r < rows; r++)
                 for (int c = 0; c < cols; c++)
-                    apples[r, c] = board.Cells[r, c].Type == CellType.Apple;
+                    apples[r, c] = board.IsFruit((r, c));
 
             var body = new List<(int x, int y)>(board.CaterpillarSegments);
             var head = board.CaterpillarHead;
-            int stepsLeft = stepsLimit;
+            int stepsLeft = Math.Min(stepsLimit, 15);
             int applesPlanned = 0;
 
             progress?.Report("Backtracking: planning (greedy BFS to nearest apples)...");
@@ -48,6 +51,7 @@ namespace Caterpillar.Algorithms
 
                 while (q.Count > 0)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var cur = q.Dequeue().p;
                     if (apples[cur.x, cur.y])
                     {
@@ -81,6 +85,7 @@ namespace Caterpillar.Algorithms
 
             while (stepsLeft > 0)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var path = FindPathToNearestApple(head);
                 if (path == null || path.Count == 0) break;
 
@@ -112,6 +117,7 @@ namespace Caterpillar.Algorithms
 
         public (int x, int y) GetNextMove(GameBoard board, (int x, int y) currentHead, (int x, int y)? lastPos)
         {
+            _runtimeVisited.Add(currentHead);
             if (_plan.Count > 0)
             {
                 // return next valid planned move; skip any that became invalid
@@ -124,18 +130,80 @@ namespace Caterpillar.Algorithms
                 }
             }
 
-            // Fallback: choose any valid neighbor (prefer apple)
-            var neighbors = GetNeighbors(currentHead, board);
-            var apple = neighbors.FirstOrDefault(n => board.Cells[n.x, n.y].Type == CellType.Apple && board.IsValidMove(n));
-            if (apple != default) return apple;
+            // Re-plan from the current board instead of wandering when the cached
+            // short plan has been consumed or invalidated by snake growth.
+            var pathMove = FindNextFruitMove(board, currentHead);
+            if (pathMove.HasValue)
+                return pathMove.Value;
 
-            foreach (var n in neighbors)
+            // If no fruit path exists, select the legal move that leaves the
+            // largest reachable free area instead of circling along an edge.
+            var neighbors = GetNeighbors(currentHead, board)
+                .Where(p => board.IsValidMove(p) && !_runtimeVisited.Contains(p))
+                .ToList();
+
+            var best = neighbors
+                .Where(n => !lastPos.HasValue || n != lastPos.Value)
+                .OrderByDescending(n => CountFreeArea(board, n))
+                .FirstOrDefault();
+            if (neighbors.Contains(best) && board.IsValidMove(best))
+                return best;
+
+            return currentHead;
+        }
+
+        private (int x, int y)? FindNextFruitMove(GameBoard board, (int x, int y) start)
+        {
+            var queue = new Queue<(int x, int y)>();
+            var visited = new HashSet<(int x, int y)> { start };
+            var parent = new Dictionary<(int x, int y), (int x, int y)>();
+            queue.Enqueue(start);
+
+            while (queue.Count > 0)
             {
-                if (lastPos.HasValue && n == lastPos.Value) continue;
-                if (board.IsValidMove(n)) return n;
+                var current = queue.Dequeue();
+                foreach (var next in GetNeighbors(current, board))
+                {
+                    if (!IsFree(board, next) || !visited.Add(next))
+                        continue;
+
+                    parent[next] = current;
+                    if (board.IsFruit(next))
+                    {
+                        var step = next;
+                        while (parent[step] != start)
+                            step = parent[step];
+                        return step;
+                    }
+                    queue.Enqueue(next);
+                }
             }
 
-            return lastPos ?? currentHead;
+            return null;
+        }
+
+        private static bool IsFree(GameBoard board, (int x, int y) position)
+        {
+            return position.x >= 0 && position.x < board.Rows &&
+                   position.y >= 0 && position.y < board.Cols &&
+                   !board.CaterpillarSegments.Contains(position);
+        }
+
+        private int CountFreeArea(GameBoard board, (int x, int y) start)
+        {
+            var queue = new Queue<(int x, int y)>();
+            var visited = new HashSet<(int x, int y)> { start };
+            queue.Enqueue(start);
+            var count = 0;
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                count++;
+                foreach (var next in GetNeighbors(current, board))
+                    if (IsFree(board, next) && visited.Add(next))
+                        queue.Enqueue(next);
+            }
+            return count;
         }
 
         private IEnumerable<(int x, int y)> GetNeighbors((int x, int y) p, GameBoard board)
