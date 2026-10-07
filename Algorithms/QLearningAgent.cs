@@ -175,6 +175,8 @@ namespace Caterpillar.Algorithms
                         reward += LineProgressReward;
                     if (actionIdx == Opposite(previousAction))
                         reward -= ReverseMovePenalty;
+                    if (!ate && newDist >= prevDist)
+                        reward -= EmptyMovePenalty;
                     var nextKey = StateKey(env, env.CaterpillarHead, actionIdx);
                     var nextQ = GetQValues(nextKey);
                     double maxNext = double.NegativeInfinity;
@@ -394,24 +396,16 @@ namespace Caterpillar.Algorithms
             if (neighbors.Count == 0 && legalNeighbors.Count > 0)
                 neighbors = legalNeighbors;
 
-            if (_runtimeStateVisits[runtimeState] > 1)
-            {
-                foreach (var candidate in neighbors)
-                {
-                    var simulated = new GameBoard(board);
-                    simulated.MoveCaterpillarTo(candidate.pos);
-
-                    var nextState = RuntimeStateKey(simulated, simulated.CaterpillarHead);
-                    if (!_runtimeStateVisits.ContainsKey(nextState))
-                        return candidate.pos;
-                }
-
-                return neighbors[0].pos;
-            }
-
             var currentFruitDistance = FindNearestFruitDistance(board);
-            var localFruitMove = FindLocalFruitMove(board, currentHead);
-            var componentMove = FindBestAppleComponentMove(board, currentHead);
+            var adjacentApple = neighbors.FirstOrDefault(candidate => board.IsFruit(candidate.pos));
+            if (board.IsFruit(adjacentApple.pos))
+                return adjacentApple.pos;
+
+            var plannedMove = AppleRoutePlanner.FindBestMove(board, currentHead, _runtimeVisited);
+            if (plannedMove.HasValue)
+                return plannedMove.Value;
+
+            var nearestAppleDistance = FindNearestFruitDistance(board);
             // The persisted Q-table is only a tie-breaker. Runtime geometry must
             // decide first, otherwise an old policy can walk away from reachable fruit.
             int previousAction = lastPos.HasValue ? GetAction(lastPos.Value, currentHead) : -1;
@@ -434,14 +428,12 @@ namespace Caterpillar.Algorithms
                     val -= fruitDistance * 100.0;
                 if (localDistance != int.MaxValue)
                     val -= localDistance * 250.0;
+                if (nearestAppleDistance != int.MaxValue && fruitDistance < nearestAppleDistance)
+                    val += 1200.0;
                 val += Math.Clamp(qvals[n.actionIdx], -5.0, 5.0);
-                if (localFruitMove.HasValue && n.pos == localFruitMove.Value)
-                    val += 500.0;
-                if (componentMove.HasValue && n.pos == componentMove.Value)
-                    val += LineTargetBonus;
                 if (_runtimeVisitCounts.TryGetValue(n.pos, out var visits)) val -= RevisitPenalty * visits;
                 if (n.actionIdx == Opposite(previousAction)) val -= ReverseMovePenalty;
-                val += _rng.NextDouble() * 2.0;
+                val += _rng.NextDouble() * 0.05;
                 if (val > best)
                 {
                     best = val; bestList.Clear(); bestList.Add(n);

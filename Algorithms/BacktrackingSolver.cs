@@ -46,26 +46,20 @@ namespace Caterpillar.Algorithms
                 }
             }
 
-            var componentMove = FindBestAppleComponentMove(board, currentHead);
-            if (componentMove.HasValue && board.IsValidMove(componentMove.Value))
-                return componentMove.Value;
-
-            // Re-plan from the current board instead of wandering when no line remains.
-            var pathMove = FindLocalFruitMove(board, currentHead);
-            if (pathMove.HasValue && board.IsValidMove(pathMove.Value))
-                return pathMove.Value;
-
-            pathMove = FindNextFruitMove(board, currentHead);
-            // Only accept the fruit-directed move if it's still a legal/valid move
-            // according to the GameBoard model; otherwise fall back to the valid-move
-            // route (area-based heuristic) below.
-            if (pathMove.HasValue && board.IsValidMove(pathMove.Value))
-                return pathMove.Value;
-
-            // With no apples left, use a deterministic bounded fallback.
             var neighbors = GetNeighbors(currentHead, board)
                 .Where(board.IsValidMove)
                 .ToList();
+
+            var adjacentApple = neighbors
+                .Where(board.IsFruit)
+                .OrderBy(n => _runtimeVisited.Contains(n))
+                .FirstOrDefault();
+            if (board.IsFruit(adjacentApple))
+                return adjacentApple;
+
+            var plannedMove = AppleRoutePlanner.FindBestMove(board, currentHead, _runtimeVisited);
+            if (plannedMove.HasValue)
+                return plannedMove.Value;
 
             var best = neighbors
                 .OrderBy(n => _runtimeVisited.Contains(n))
@@ -76,6 +70,24 @@ namespace Caterpillar.Algorithms
                 return best;
 
             return currentHead;
+        }
+
+        private (int x, int y)? FindClosestAppleMove(
+            GameBoard board,
+            (int x, int y) start,
+            List<(int x, int y)> neighbors)
+        {
+            var apples = board.Cells.Cast<GridCell>()
+                .Where(cell => cell.Type == CellType.Apple)
+                .Select(cell => (cell.X, cell.Y))
+                .ToList();
+            if (apples.Count == 0)
+                return null;
+
+            return neighbors
+                .OrderBy(move => apples.Min(apple => Math.Abs(move.Item1 - apple.X) + Math.Abs(move.Item2 - apple.Y)))
+                .ThenBy(move => _runtimeVisited.Contains(move))
+                .FirstOrDefault();
         }
 
         private (int x, int y)? FindBestAppleComponentMove(GameBoard board, (int x, int y) start)

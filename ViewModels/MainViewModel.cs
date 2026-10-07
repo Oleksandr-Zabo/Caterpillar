@@ -113,7 +113,7 @@ namespace Caterpillar.ViewModels
             var decisionTimer = Stopwatch.StartNew();
             try
             {
-                if (_decisionTimeCache.TryGetValue(cacheKey, out var cachedDecisionTime) && algorithm is QLearningAgent)
+                if (_decisionTimeCache.TryGetValue(cacheKey, out var cachedDecisionTime))
                 {
                     DecisionTime = $"Decision time: {cachedDecisionTime} ms (cached)";
                 }
