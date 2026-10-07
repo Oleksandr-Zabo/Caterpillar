@@ -8,7 +8,6 @@ using Caterpillar.Models;
 
 namespace Caterpillar.Algorithms
 {
-    // Simple trainer that runs multiple training runs and selects the best Q-table
     public class QLearningTrainer
     {
         public async Task<string> RunAndSaveBestAsync(GameBoard board, int stepsLimit, int runs = 6, IProgress<string>? progress = null, CancellationToken cancellationToken = default)
@@ -61,7 +60,6 @@ namespace Caterpillar.Algorithms
                     double avgApples = totalApples / evalEpisodes;
                     double avgSteps = totalSteps / evalEpisodes;
 
-                    // combine apples and steps into a score (apples have priority)
                     double score = avgApples + 0.01 * (avgSteps / Math.Max(1, board.Rows * board.Cols * 2));
 
                     progress?.Report($"Trainer: run {i + 1} avg apples {avgApples:F2}, avg steps {avgSteps:F1} (time {sw.ElapsedMilliseconds} ms)");

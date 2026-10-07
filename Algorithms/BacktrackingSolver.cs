@@ -11,6 +11,8 @@ namespace Caterpillar.Algorithms
     // Simple backtracking / greedy solver that tries to eat nearby apples using DFS with custom stack
     public class BacktrackingSolver : IAlgorithm
     {
+        private const int LocalAppleLookahead = 3;
+        private const int ComponentDistancePenalty = 4;
         public string Name => "Backtracking";
         private Queue<(int x, int y)> _plan = new();
         private int _plannedApples = 0;
@@ -20,98 +22,12 @@ namespace Caterpillar.Algorithms
 
         public Task PrepareAsync(GameBoard board, int stepsLimit, System.IProgress<string> progress, CancellationToken cancellationToken = default)
         {
-            // Replace expensive DFS with greedy shortest-path planning to nearest apples.
+            // Movement is selected online so every step can use the current three-move apple horizon.
             _plan.Clear();
             _runtimeVisited.Clear();
-
-            int rows = board.Rows;
-            int cols = board.Cols;
-
-            // copy apple positions
-            var apples = new bool[rows, cols];
-            for (int r = 0; r < rows; r++)
-                for (int c = 0; c < cols; c++)
-                    apples[r, c] = board.IsFruit((r, c));
-
-            var body = new List<(int x, int y)>(board.CaterpillarSegments);
-            var head = board.CaterpillarHead;
-            int stepsLeft = Math.Min(stepsLimit, 15);
-            int applesPlanned = 0;
-
-            progress?.Report("Backtracking: planning (greedy BFS to nearest apples)...");
-
-            // helper: BFS to nearest apple avoiding current body positions
-            List<(int x, int y)> FindPathToNearestApple((int x, int y) start)
-            {
-                var q = new Queue<((int x, int y) p, (int x, int y)? parent)>();
-                var visited = new bool[rows, cols];
-                var parent = new Dictionary<(int x, int y), (int x, int y)>();
-                q.Enqueue((start, null));
-                visited[start.x, start.y] = true;
-
-                while (q.Count > 0)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var cur = q.Dequeue().p;
-                    if (apples[cur.x, cur.y])
-                    {
-                        // reconstruct path from start (exclusive) to cur (inclusive)
-                        var path = new List<(int x, int y)>();
-                        var p = cur;
-                        while (!p.Equals(start))
-                        {
-                            path.Add(p);
-                            p = parent[p];
-                        }
-                        path.Reverse();
-                        return path;
-                    }
-
-                    foreach (var nb in new (int dx, int dy)[] { (-1,0),(1,0),(0,-1),(0,1) })
-                    {
-                        var nx = cur.x + nb.dx;
-                        var ny = cur.y + nb.dy;
-                        if (nx < 0 || nx >= rows || ny < 0 || ny >= cols) continue;
-                        if (visited[nx, ny]) continue;
-                        // avoid moving into body positions (except tail which will move if not eating)
-                        if (body.Contains((nx, ny))) continue;
-                        visited[nx, ny] = true;
-                        parent[(nx, ny)] = cur;
-                        q.Enqueue(((nx, ny), null));
-                    }
-                }
-                return null;
-            }
-
-            while (stepsLeft > 0)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var path = FindPathToNearestApple(head);
-                if (path == null || path.Count == 0) break;
-
-                foreach (var stepPos in path)
-                {
-                    if (stepsLeft == 0) break;
-                    _plan.Enqueue(stepPos);
-
-                    bool cellHasApple = apples[stepPos.x, stepPos.y];
-                    // simulate body movement
-                    body.Insert(0, stepPos);
-                    if (!cellHasApple)
-                        body.RemoveAt(body.Count - 1);
-                    else
-                    {
-                        apples[stepPos.x, stepPos.y] = false;
-                        applesPlanned++;
-                    }
-
-                    head = stepPos;
-                    stepsLeft--;
-                }
-            }
-
-            _plannedApples = applesPlanned;
-            progress?.Report($"Backtracking: plan length {_plan.Count}, apples planned: {_plannedApples}");
+            cancellationToken.ThrowIfCancellationRequested();
+            _plannedApples = 0;
+            progress?.Report("Backtracking: using three-move local apple planning.");
             return Task.CompletedTask;
         }
 
@@ -130,27 +46,139 @@ namespace Caterpillar.Algorithms
                 }
             }
 
-            // Re-plan from the current board instead of wandering when the cached
-            // short plan has been consumed or invalidated by snake growth.
-            var pathMove = FindNextFruitMove(board, currentHead);
-            if (pathMove.HasValue)
+            var componentMove = FindBestAppleComponentMove(board, currentHead);
+            if (componentMove.HasValue && board.IsValidMove(componentMove.Value))
+                return componentMove.Value;
+
+            // Re-plan from the current board instead of wandering when no line remains.
+            var pathMove = FindLocalFruitMove(board, currentHead);
+            if (pathMove.HasValue && board.IsValidMove(pathMove.Value))
                 return pathMove.Value;
 
-            // If no fruit path exists, select the legal move that leaves the
-            // largest reachable free area instead of circling along an edge.
+            pathMove = FindNextFruitMove(board, currentHead);
+            // Only accept the fruit-directed move if it's still a legal/valid move
+            // according to the GameBoard model; otherwise fall back to the valid-move
+            // route (area-based heuristic) below.
+            if (pathMove.HasValue && board.IsValidMove(pathMove.Value))
+                return pathMove.Value;
+
+            // With no apples left, use a deterministic bounded fallback.
             var neighbors = GetNeighbors(currentHead, board)
-                .Where(p => board.IsValidMove(p) && !_runtimeVisited.Contains(p))
+                .Where(board.IsValidMove)
                 .ToList();
 
             var best = neighbors
-                .Where(n => !lastPos.HasValue || n != lastPos.Value)
-                .OrderByDescending(n => CountFreeArea(board, n))
+                .OrderBy(n => _runtimeVisited.Contains(n))
+                .ThenBy(n => n.x)
+                .ThenBy(n => n.y)
                 .FirstOrDefault();
             if (neighbors.Contains(best) && board.IsValidMove(best))
                 return best;
 
             return currentHead;
         }
+
+        private (int x, int y)? FindBestAppleComponentMove(GameBoard board, (int x, int y) start)
+        {
+            var components = FindAppleComponents(board);
+            if (components.Count == 0)
+                return null;
+
+            var selected = components
+                .OrderByDescending(component => component.Count * 100 -
+                    ManhattanDistanceToComponent(start, component) * ComponentDistancePenalty)
+                .ThenBy(component => ManhattanDistanceToComponent(start, component))
+                .First();
+
+            return FindPathMoveToTargets(board, start, selected);
+        }
+
+        private List<List<(int x, int y)>> FindAppleComponents(GameBoard board)
+        {
+            var components = new List<List<(int x, int y)>>();
+            var visited = new HashSet<(int x, int y)>();
+            for (var x = 0; x < board.Rows; x++)
+            {
+                for (var y = 0; y < board.Cols; y++)
+                {
+                    var start = (x, y);
+                    if (!board.IsFruit(start) || !visited.Add(start)) continue;
+                    var component = new List<(int x, int y)>();
+                    var queue = new Queue<(int x, int y)>();
+                    queue.Enqueue(start);
+                    while (queue.Count > 0)
+                    {
+                        var current = queue.Dequeue();
+                        component.Add(current);
+                        foreach (var next in GetNeighbors(current, board))
+                            if (board.IsFruit(next) && visited.Add(next)) queue.Enqueue(next);
+                    }
+                    components.Add(component);
+                }
+            }
+            return components;
+        }
+
+        private static int ManhattanDistanceToComponent((int x, int y) start, List<(int x, int y)> component) =>
+            component.Min(cell => Math.Abs(cell.x - start.x) + Math.Abs(cell.y - start.y));
+
+        private (int x, int y)? FindPathMoveToTargets(
+            GameBoard board,
+            (int x, int y) start,
+            List<(int x, int y)> targets)
+        {
+            var targetSet = targets.ToHashSet();
+            var queue = new Queue<((int x, int y) position, (int x, int y) first)>();
+            var visited = new HashSet<(int x, int y)> { start };
+            queue.Enqueue((start, start));
+            while (queue.Count > 0)
+            {
+                var (current, first) = queue.Dequeue();
+                foreach (var next in GetNeighbors(current, board))
+                {
+                    if (!board.IsValidPosition(next) || !visited.Add(next)) continue;
+                    var firstStep = current == start ? next : first;
+                    if (targetSet.Contains(next)) return firstStep;
+                    queue.Enqueue((next, firstStep));
+                }
+            }
+            return null;
+        }
+
+        private (int x, int y)? FindLocalFruitMove(GameBoard board, (int x, int y) start)
+        {
+            var queue = new Queue<((int x, int y) position, (int x, int y) first, int distance)>();
+            var visited = new HashSet<(int x, int y)> { start };
+            queue.Enqueue((start, start, 0));
+            var candidates = new List<((int x, int y) apple, (int x, int y) first, int distance)>();
+
+            while (queue.Count > 0)
+            {
+                var (current, first, distance) = queue.Dequeue();
+                if (distance >= LocalAppleLookahead)
+                    continue;
+
+                foreach (var next in GetNeighbors(current, board))
+                {
+                    if (!board.IsValidPosition(next) || !visited.Add(next))
+                        continue;
+
+                    var firstStep = current == start ? next : first;
+                    var nextDistance = distance + 1;
+                    if (board.IsFruit(next))
+                        candidates.Add((next, firstStep, nextDistance));
+                    queue.Enqueue((next, firstStep, nextDistance));
+                }
+            }
+
+            return candidates
+                .OrderBy(candidate => candidate.distance)
+                .ThenBy(candidate => candidate.apple.x)
+                .ThenBy(candidate => candidate.apple.y)
+                .Select(candidate => ((int x, int y)?)candidate.first)
+                .FirstOrDefault();
+        }
+
 
         private (int x, int y)? FindNextFruitMove(GameBoard board, (int x, int y) start)
         {
@@ -186,7 +214,7 @@ namespace Caterpillar.Algorithms
         {
             return position.x >= 0 && position.x < board.Rows &&
                    position.y >= 0 && position.y < board.Cols &&
-                   !board.CaterpillarSegments.Contains(position);
+                   true;
         }
 
         private int CountFreeArea(GameBoard board, (int x, int y) start)

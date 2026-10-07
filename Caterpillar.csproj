@@ -12,6 +12,9 @@
   <ItemGroup>
     <Folder Include="Views\" />
     <Content Include="Icons\icon.ico" />
+    <Content Include="Icons\apple.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Icons\caterpillar.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="data.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -1,186 +1,179 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace Caterpillar.Models
 {
-    public class GameBoard
+    public sealed class GameBoard
     {
-        public const int MinBoardSize = 3;
-        public const int MaxBoardSize = 30;
-        public const int InitialCaterpillarLength = 3;
+        public const int MinBoardDimension = 1;
+        public const int MaxBoardDimension = 200;
+        public const int StartX = 0;
+        public const int StartY = 0;
+        public const int MinBoardSize = MinBoardDimension;
+        public const int MaxBoardSize = MaxBoardDimension;
+        public const int InitialCaterpillarLength = 1;
 
-        private readonly Random _rng = new();
         private readonly GridCell[,] _cells;
+        private readonly Caterpillar _caterpillar;
         private readonly int _rows;
         private readonly int _cols;
-        private readonly Caterpillar _caterpillar;
 
-        public int ApplesRemaining { get; private set; }
-        public int FruitsRemaining => ApplesRemaining;
-        public FruitType FruitType { get; }
-
-        public (int x, int y) LastPosition { get; private set; }
-
-        public GameBoard(int rows, int cols, int apples, FruitType fruitType = FruitType.Apple)
+        public GameBoard(int rows, int cols, int apples = 0, FruitType fruitType = FruitType.Apple)
         {
-            rows = Math.Clamp(rows, MinBoardSize, MaxBoardSize);
-            cols = Math.Clamp(cols, MinBoardSize, MaxBoardSize);
-            _rows = rows;
-            _cols = cols;
-            _cells = new GridCell[rows, cols];
+            _rows = ValidateDimension(rows, nameof(rows));
+            _cols = ValidateDimension(cols, nameof(cols));
+            _cells = CreateCells(_rows, _cols);
+            _caterpillar = new Caterpillar(StartX, StartY);
             FruitType = fruitType;
-
-            for (int r = 0; r < rows; r++)
-            for (int c = 0; c < cols; c++)
-                _cells[r, c] = new GridCell { X = r, Y = c };
-
-            // place caterpillar in center with initial length 3
-            int sx = Math.Max(InitialCaterpillarLength - 1, rows / 2);
-            int sy = cols / 2;
-            _caterpillar = new Caterpillar(sx, sy, InitialCaterpillarLength);
-            // mark caterpillar cells (head + tail)
-            foreach (var seg in _caterpillar.Segments)
-            {
-                _cells[seg.x, seg.y].Type = seg.Equals(_caterpillar.Head) ? CellType.Head : CellType.Tail;
-            }
-            LastPosition = _caterpillar.Head;
-
-            PlaceApples(apples);
+            LastPosition = null;
+            _cells[StartX, StartY].Type = CellType.Head;
+            ApplesRemaining = 0;
         }
 
-        // Clone constructor: create a new board with the same cell types and caterpillar head
+        public GameBoard(string filePath)
+        {
+            var rows = File.ReadAllLines(filePath)
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0)
+                .ToArray();
+
+            if (rows.Length == 0)
+                throw new InvalidDataException("The board file does not contain any rows.");
+
+            if (rows.Any(row => row.Any(character => character != '0' && character != '1')))
+                throw new InvalidDataException("The board file may contain only 0 and 1 characters.");
+
+            if (rows.Any(row => row.Length != rows[0].Length))
+                throw new InvalidDataException("All board rows must have the same number of columns.");
+
+            _rows = ValidateDimension(rows.Length, "rows");
+            _cols = ValidateDimension(rows[0].Length, "columns");
+            _cells = CreateCells(_rows, _cols);
+            _caterpillar = new Caterpillar(StartX, StartY);
+            FruitType = FruitType.Apple;
+            LastPosition = null;
+
+            for (var x = 0; x < _rows; x++)
+            {
+                for (var y = 0; y < _cols; y++)
+                {
+                    if (rows[x][y] == '1')
+                    {
+                        _cells[x, y].Type = CellType.Apple;
+                        ApplesRemaining++;
+                    }
+                }
+            }
+
+            _cells[StartX, StartY].Type = CellType.Head;
+            if (rows[StartX][StartY] == '1')
+                ApplesRemaining--;
+        }
+
         public GameBoard(GameBoard other)
         {
             _rows = other._rows;
             _cols = other._cols;
-            _cells = new GridCell[_rows, _cols];
+            _cells = CreateCells(_rows, _cols);
+            for (var x = 0; x < _rows; x++)
+            for (var y = 0; y < _cols; y++)
+                _cells[x, y].Type = other._cells[x, y].Type;
 
-            for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-                _cells[r, c] = new GridCell { X = r, Y = c, Type = other._cells[r, c].Type };
-
-            _caterpillar = new Caterpillar(other.CaterpillarSegments);
+            _caterpillar = new Caterpillar(other.CaterpillarHead.x, other.CaterpillarHead.y);
             FruitType = other.FruitType;
-            LastPosition = other.LastPosition;
             ApplesRemaining = other.ApplesRemaining;
+            LastPosition = other.LastPosition;
         }
 
         public int Rows => _rows;
         public int Cols => _cols;
-
-        private void PlaceApples(int apples)
-        {
-            int maxFruits = Math.Max(0, _rows * _cols - InitialCaterpillarLength);
-            apples = Math.Clamp(apples, 0, maxFruits);
-            ApplesRemaining = apples;
-            var positions = new List<(int x, int y)>();
-
-            for (int r = 0; r < _rows; r++)
-            for (int c = 0; c < _cols; c++)
-                if (_cells[r, c].Type == CellType.Empty)
-                    positions.Add((r, c));
-
-            for (int i = 0; i < apples && positions.Count > 0; i++)
-            {
-                int idx = _rng.Next(positions.Count);
-                var p = positions[idx];
-                positions.RemoveAt(idx);
-                _cells[p.x, p.y].Type = FruitType == FruitType.Grape ? CellType.Grape : CellType.Apple;
-            }
-        }
-
+        public int BoardSize => Math.Max(_rows, _cols);
         public GridCell[,] Cells => _cells;
-
+        public FruitType FruitType { get; }
+        public int ApplesRemaining { get; private set; }
+        public int FruitsRemaining => ApplesRemaining;
         public (int x, int y) CaterpillarHead => _caterpillar.Head;
+        public IEnumerable<(int x, int y)> CaterpillarSegments => new[] { CaterpillarHead };
+        public (int x, int y)? LastPosition { get; private set; }
 
-        public IEnumerable<(int x, int y)> CaterpillarSegments => _caterpillar.Segments;
-
-        public static bool IsValidPosition(int x, int y, int boardSize, List<(int x, int y)> body)
+        public string LayoutKey
         {
-            if (x < 0 || x >= boardSize || y < 0 || y >= boardSize)
-                return false;
-
-            if (body == null || body.Count == 0)
-                return true;
-
-            for (int i = 0; i < body.Count; i++)
+            get
             {
-                if (body[i] == (x, y))
-                    return false;
-            }
-
-            return true;
-        }
-
-        public bool IsValidPosition((int x, int y) position)
-        {
-            var body = new List<(int x, int y)>(_caterpillar.Segments);
-            return IsValidPosition(position.x, position.y, _rows, body);
-        }
-
-        public bool IsValidMove((int x, int y) pos)
-        {
-            if (!IsValidPosition(pos))
-                return false;
-
-            // cannot move back to last position
-            if (pos == LastPosition)
-                return false;
-
-            // must be adjacent (manhattan distance 1)
-            var head = CaterpillarHead;
-            int md = Math.Abs(head.x - pos.x) + Math.Abs(head.y - pos.y);
-            return md == 1;
-        }
-
-        // Move caterpillar's head to position. Returns true if ate apple.
-        public bool MoveCaterpillarTo((int x, int y) pos)
-        {
-            if (!IsValidMove(pos))
-                return false;
-
-            var head = CaterpillarHead;
-            bool ate = IsFruit(_cells[pos.x, pos.y].Type);
-
-            // set previous head to tail
-            _cells[head.x, head.y].Type = CellType.Tail;
-
-            // Move caterpillar and get removed tail position (if any)
-            var removed = _caterpillar.MoveTo(pos, ate);
-
-            // update new head cell
-            _cells[pos.x, pos.y].Type = CellType.Head;
-
-            // if tail was removed (didn't grow), clear that cell
-            if (removed.HasValue)
-            {
-                var t = removed.Value;
-                if (t.x >= 0 && t.x < _rows && t.y >= 0 && t.y < _cols)
+                var layout = new System.Text.StringBuilder(_rows * (_cols + 1));
+                layout.Append(_rows).Append('x').Append(_cols).Append(':');
+                for (var x = 0; x < _rows; x++)
                 {
-                    // only clear if not occupied by head or apple
-                    if (_cells[t.x, t.y].Type != CellType.Head && !IsFruit(_cells[t.x, t.y].Type))
-                        _cells[t.x, t.y].Type = CellType.Empty;
+                    for (var y = 0; y < _cols; y++)
+                        layout.Append(_cells[x, y].Type == CellType.Apple ? '1' : '0');
+                    layout.Append('/');
                 }
+                return layout.ToString();
             }
+        }
+
+        public static bool IsValidPosition(int x, int y, int boardSize, List<(int x, int y)>? body = null) =>
+            x >= 0 && x < boardSize && y >= 0 && y < boardSize;
+
+        public bool IsValidPosition((int x, int y) position) =>
+            position.x >= 0 && position.x < _rows && position.y >= 0 && position.y < _cols;
+
+        public bool IsValidMove((int x, int y) position)
+        {
+            if (!IsValidPosition(position))
+                return false;
+
+            var head = CaterpillarHead;
+            return Math.Abs(head.x - position.x) + Math.Abs(head.y - position.y) == 1;
+        }
+
+        public bool MoveCaterpillarTo((int x, int y) position)
+        {
+            if (!IsValidMove(position))
+                return false;
+
+            var ate = IsFruit(position);
+            var previous = CaterpillarHead;
+            _cells[previous.x, previous.y].Type = CellType.Empty;
+            _caterpillar.MoveTo(position);
+            _cells[position.x, position.y].Type = CellType.Head;
+            LastPosition = previous;
 
             if (ate)
-            {
-                ApplesRemaining = Math.Max(0, ApplesRemaining - 1);
-            }
+                ApplesRemaining--;
 
-            LastPosition = head;
             return ate;
         }
 
-        public bool IsFruit((int x, int y) position)
+        public bool TryMoveCaterpillarTo((int x, int y) position, out bool ateApple)
         {
-            if (position.x < 0 || position.x >= _rows || position.y < 0 || position.y >= _cols)
+            ateApple = false;
+            if (!IsValidMove(position))
                 return false;
 
-            return IsFruit(_cells[position.x, position.y].Type);
+            ateApple = MoveCaterpillarTo(position);
+            return true;
         }
 
-        private static bool IsFruit(CellType type) => type == CellType.Apple || type == CellType.Grape;
+        public bool IsFruit((int x, int y) position) =>
+            IsValidPosition(position) && _cells[position.x, position.y].Type == CellType.Apple;
+
+        private static GridCell[,] CreateCells(int rows, int cols)
+        {
+            var cells = new GridCell[rows, cols];
+            for (var x = 0; x < rows; x++)
+            for (var y = 0; y < cols; y++)
+                cells[x, y] = new GridCell { X = x, Y = y, Type = CellType.Empty };
+            return cells;
+        }
+
+        private static int ValidateDimension(int value, string name)
+        {
+            if (value < MinBoardDimension || value > MaxBoardDimension)
+                throw new ArgumentOutOfRangeException(name, value, $"Board dimensions must be between {MinBoardDimension} and {MaxBoardDimension}.");
+            return value;
+        }
     }
 }
