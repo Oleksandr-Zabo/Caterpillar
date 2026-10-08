@@ -15,10 +15,14 @@ namespace Caterpillar.Algorithms
     public class QLearningAgent : IAlgorithm
     {
         private const int ActionCount = 4;
-        private const int MinimumEpisodes = 1000;
-        private const int MaximumEpisodes = 3000;
-        private const int TrainingYieldInterval = 8;
-        private const int MaximumTrainingSteps = 180;
+        private const double TargetAccuracy = 0.915;
+        private const int EvaluationInterval = 256;
+        private const int MaximumTrainingEpisodes = 100000;
+        private const int MaximumTrainingMilliseconds = 300000;
+        private const int TrainingYieldInterval = 4;
+        private const int MaximumTrainingSteps = 60;
+        private const int ParallelWorkerCount = 4;
+        private const int EpisodesPerWorker = 96;
         private const int LocalAppleLookahead = 3;
         private const double LocalAppleReward = 35.0;
         private const double DistanceReward = 8.0;
@@ -41,47 +45,93 @@ namespace Caterpillar.Algorithms
         private readonly Dictionary<(int x, int y), int> _runtimeVisitCounts = new();
         private readonly Dictionary<string, int> _runtimeStateVisits = new();
         private (int x, int y)? _runtimeLastHead;
+        private readonly bool _workerMode;
+        private readonly int _workerEpisodes;
+
+        public QLearningAgent()
+        {
+        }
+
+        private QLearningAgent(int workerEpisodes)
+        {
+            _workerMode = true;
+            _workerEpisodes = workerEpisodes;
+        }
 
         public async Task PrepareAsync(GameBoard board, int stepsLimit, IProgress<string> progress, CancellationToken cancellationToken = default)
         {
             progress?.Report("QLearning: preparing...");
             ResetRuntimeState();
+            var evaluationSteps = Math.Max(1, stepsLimit);
+            var targetApples = Math.Min(board.Rows * board.Cols, (int)Math.Ceiling(evaluationSteps * TargetAccuracy));
 
             // Use a simple cache file per board size+applecount to speed training
             var boardKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(board.LayoutKey)))[..16];
-            string bestFname = $"best_qtable_v5_{board.Rows}x{board.Cols}_{boardKey}.json";
-            string fname = $"qtable_v5_{board.Rows}x{board.Cols}_{boardKey}.json";
+            string bestFname = $"best_qtable_v6_{board.Rows}x{board.Cols}_{boardKey}.json";
+            string fname = $"qtable_v6_{board.Rows}x{board.Cols}_{boardKey}.json";
+
             // prefer best file if present
-            if (File.Exists(bestFname))
+            var loaded = false;
+            if (!_workerMode && File.Exists(bestFname))
             {
                 try
                 {
                     LoadFromFile(bestFname);
-                    progress?.Report("QLearning: loaded best q-table from file.");
-                    return;
+                    loaded = true;
+                    progress?.Report($"QLearning: loaded cached table; evaluating {evaluationSteps}-step accuracy.");
                 }
                 catch { }
             }
-            if (File.Exists(fname))
+            if (!_workerMode && !loaded && File.Exists(fname))
             {
                 try
                 {
                     LoadFromFile(fname);
-                    progress?.Report("QLearning: loaded q-table from file.");
-                    return;
+                    loaded = true;
+                    progress?.Report($"QLearning: loaded cached table; evaluating {evaluationSteps}-step accuracy.");
                 }
                 catch { }
             }
 
+            if (loaded)
+            {
+                var cachedScore = EvaluatePolicy(board, evaluationSteps, cancellationToken);
+                progress?.Report($"QLearning: cached accuracy {cachedScore}/{evaluationSteps} ({AccuracyPercent(cachedScore, evaluationSteps):F1}%), target {TargetAccuracy:P1}.");
+                if (cachedScore >= targetApples)
+                    return;
+            }
+
+            if (!_workerMode)
+            {
+                progress?.Report($"QLearning: training {ParallelWorkerCount} candidates in parallel...");
+                var candidates = Enumerable.Range(0, ParallelWorkerCount)
+                    .Select(index => Task.Run(async () =>
+                    {
+                        var worker = new QLearningAgent(EpisodesPerWorker);
+                        await worker.PrepareAsync(board, stepsLimit, null, cancellationToken);
+                        var score = worker.EvaluatePolicy(board, evaluationSteps, cancellationToken);
+                        return (worker, score);
+                    }, cancellationToken))
+                    .ToArray();
+
+                var results = await Task.WhenAll(candidates);
+                var bestWorker = results.OrderByDescending(result => result.score).First();
+                _q.LoadFromDictionary(bestWorker.worker._q.ToDictionary());
+                SaveToFile(fname);
+                progress?.Report($"QLearning: selected parallel candidate {bestWorker.score}/{evaluationSteps} ({AccuracyPercent(bestWorker.score, evaluationSteps):F1}%).");
+                return;
+            }
+
             // Perform Q-Learning training using episodes on the provided board
             // Increase episodes proportional to board size to obtain stronger policies
-            int episodes = Math.Clamp(board.Rows * board.Cols * 10, MinimumEpisodes, MaximumEpisodes);
+            int episodes = _workerMode ? _workerEpisodes : MaximumTrainingEpisodes;
             double alpha = LearningRate;
             double gamma = DiscountFactor;
             double epsilon = InitialExploration;
             double epsilonMin = MinimumExploration;
             double epsilonDecay = ExplorationDecay;
-            int maxStepsPerEpisode = Math.Clamp(board.Rows * board.Cols / 2, 30, MaximumTrainingSteps);
+            int maxStepsPerEpisode = Math.Clamp(board.Rows * board.Cols / 35, 30, MaximumTrainingSteps);
+            var trainingTimer = System.Diagnostics.Stopwatch.StartNew();
 
             // q entries are created on demand during training
 
@@ -89,11 +139,21 @@ namespace Caterpillar.Algorithms
             for (int ep = 0; ep < episodes; ep++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (trainingTimer.ElapsedMilliseconds >= MaximumTrainingMilliseconds)
+                    break;
 
                 if (ep % TrainingYieldInterval == 0)
                 {
                     progress?.Report($"QLearning: training {ep + 1}/{episodes}");
                     await Task.Yield();
+                }
+
+                if (!_workerMode && ep > 0 && ep % EvaluationInterval == 0)
+                {
+                    var score = EvaluatePolicy(board, evaluationSteps, cancellationToken);
+                    progress?.Report($"QLearning: accuracy {score}/{evaluationSteps} ({AccuracyPercent(score, evaluationSteps):F1}%) after {ep} episodes.");
+                    if (score >= targetApples)
+                        break;
                 }
 
                 // clone board to run episode without affecting UI board
@@ -120,7 +180,6 @@ namespace Caterpillar.Algorithms
                     var preferredValid = valid;
 
                     var prevDist = ManhattanDistanceToNearestFruit(env, head);
-                    var prevLocalDist = ManhattanDistanceToLocalFruit(env, head);
                     var sKey = StateKey(env, head, previousAction);
                     var qvals = GetQValues(sKey);
 
@@ -156,7 +215,6 @@ namespace Caterpillar.Algorithms
                     bool ate = env.MoveCaterpillarTo(nextPos);
                     // reward shaping: base reward and distance-based bonus
                     var newDist = ManhattanDistanceToNearestFruit(env, env.CaterpillarHead);
-                    var newLocalDist = ManhattanDistanceToLocalFruit(env, env.CaterpillarHead);
                     double reward = ate ? 180.0 : -EmptyMovePenalty;
                     if (revisited) reward -= RevisitPenalty;
                     if (newDist < prevDist)
@@ -165,14 +223,8 @@ namespace Caterpillar.Algorithms
                     }
                     else if (newDist > prevDist)
                         reward -= 5.0;
-                    if (newLocalDist < prevLocalDist)
-                        reward += DistanceReward;
-                    if (ate && newLocalDist <= LocalAppleLookahead)
+                    if (ate)
                         reward += LocalAppleReward;
-                    var previousLineScore = BestAppleLineScore(env, head);
-                    var newLineScore = BestAppleLineScore(env, env.CaterpillarHead);
-                    if (newLineScore > previousLineScore)
-                        reward += LineProgressReward;
                     if (actionIdx == Opposite(previousAction))
                         reward -= ReverseMovePenalty;
                     if (!ate && newDist >= prevDist)
@@ -197,12 +249,19 @@ namespace Caterpillar.Algorithms
                 }
             }
 
-            // write to file for future runs
+            if (!_workerMode)
+            {
+                var finalScore = EvaluatePolicy(board, evaluationSteps, cancellationToken);
+                progress?.Report($"QLearning: final accuracy {finalScore}/{evaluationSteps} ({AccuracyPercent(finalScore, evaluationSteps):F1}%).");
+            }
+
+            // Write the table for future runs. It will be evaluated again before reuse.
             try
             {
                 var dict = _q.ToDictionary();
                 var txt = JsonSerializer.Serialize(dict);
-                File.WriteAllText(fname, txt);
+                if (!_workerMode)
+                    File.WriteAllText(fname, txt);
             }
             catch { }
 
@@ -635,7 +694,37 @@ namespace Caterpillar.Algorithms
         {
             _runtimeVisited.Clear();
             _runtimeVisitCounts.Clear();
+            _runtimeStateVisits.Clear();
             _runtimeLastHead = null;
+        }
+
+        private int EvaluatePolicy(
+            GameBoard source,
+            int steps,
+            CancellationToken cancellationToken)
+        {
+            var board = new GameBoard(source);
+            ResetRuntimeState();
+            var eaten = 0;
+
+            for (var step = 0; step < steps && board.ApplesRemaining > 0; step++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var current = board.CaterpillarHead;
+                var next = GetNextMove(board, current, board.LastPosition);
+                if (!board.TryMoveCaterpillarTo(next, out var ate))
+                    break;
+                if (ate)
+                    eaten++;
+            }
+
+            ResetRuntimeState();
+            return eaten;
+        }
+
+        private static double AccuracyPercent(int apples, int steps)
+        {
+            return steps <= 0 ? 0.0 : apples * 100.0 / steps;
         }
 
         public void ResetRuntime()

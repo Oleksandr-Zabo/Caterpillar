@@ -7,8 +7,11 @@ namespace Caterpillar.Algorithms
 {
     public static class AppleRoutePlanner
     {
-        private const int SearchDepth = 28;
-        private const int BeamWidth = 80;
+        private const int SearchDepth = 20;
+        private const int EndgameSearchDepth = 14;
+        private const int BeamWidth = 40;
+        private const int EndgameBeamWidth = 24;
+        private const int EndgameAppleThreshold = 140;
         private const double AppleReward = 10000.0;
         private const double FutureAppleReward = 70.0;
         private const double TravelPenalty = 1.0;
@@ -34,6 +37,8 @@ namespace Caterpillar.Algorithms
             if (apples.Count == 0)
                 return SelectFallback(legalMoves, previous, visited);
 
+            var searchDepth = apples.Count <= EndgameAppleThreshold ? EndgameSearchDepth : SearchDepth;
+            var beamWidth = apples.Count <= EndgameAppleThreshold ? EndgameBeamWidth : BeamWidth;
             var frontier = new List<SearchNode>();
             foreach (var move in legalMoves)
             {
@@ -45,12 +50,11 @@ namespace Caterpillar.Algorithms
                     head,
                     1,
                     collected,
-                    remaining,
-                    new HashSet<(int x, int y)> { head, move }));
+                    remaining));
             }
 
             SearchNode? best = null;
-            for (var depth = 1; depth <= SearchDepth && frontier.Count > 0; depth++)
+            for (var depth = 1; depth <= searchDepth && frontier.Count > 0; depth++)
             {
                 foreach (var node in frontier)
                 {
@@ -72,21 +76,19 @@ namespace Caterpillar.Algorithms
                         if (remaining.Remove(next))
                             collected++;
 
-                        var path = new HashSet<(int x, int y)>(node.Path) { next };
                         nextFrontier.Add(new SearchNode(
                             next,
                             node.FirstMove,
                             node.Position,
                             node.Depth + 1,
                             collected,
-                            remaining,
-                            path));
+                            remaining));
                     }
                 }
 
                 frontier = nextFrontier
                     .OrderByDescending(node => Evaluate(node, apples, visited, previous, preferGlobalFrontier))
-                    .Take(BeamWidth)
+                    .Take(beamWidth)
                     .ToList();
             }
 
@@ -142,7 +144,6 @@ namespace Caterpillar.Algorithms
             (int x, int y) PreviousPosition,
             int Depth,
             int Collected,
-            HashSet<(int x, int y)> Remaining,
-            HashSet<(int x, int y)> Path);
+            HashSet<(int x, int y)> Remaining);
     }
 }
