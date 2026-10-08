@@ -15,10 +15,10 @@ namespace Caterpillar.Algorithms
     public class QLearningAgent : IAlgorithm
     {
         private const int ActionCount = 4;
-        private const int MinimumEpisodes = 120;
-        private const int MaximumEpisodes = 600;
+        private const int MinimumEpisodes = 1000;
+        private const int MaximumEpisodes = 3000;
         private const int TrainingYieldInterval = 8;
-        private const int MaximumTrainingSteps = 120;
+        private const int MaximumTrainingSteps = 180;
         private const int LocalAppleLookahead = 3;
         private const double LocalAppleReward = 35.0;
         private const double DistanceReward = 8.0;
@@ -49,8 +49,8 @@ namespace Caterpillar.Algorithms
 
             // Use a simple cache file per board size+applecount to speed training
             var boardKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(board.LayoutKey)))[..16];
-            string bestFname = $"best_qtable_v4_{board.Rows}x{board.Cols}_{boardKey}.json";
-            string fname = $"qtable_v4_{board.Rows}x{board.Cols}_{boardKey}.json";
+            string bestFname = $"best_qtable_v5_{board.Rows}x{board.Cols}_{boardKey}.json";
+            string fname = $"qtable_v5_{board.Rows}x{board.Cols}_{boardKey}.json";
             // prefer best file if present
             if (File.Exists(bestFname))
             {
@@ -396,14 +396,12 @@ namespace Caterpillar.Algorithms
             if (neighbors.Count == 0 && legalNeighbors.Count > 0)
                 neighbors = legalNeighbors;
 
-            var currentFruitDistance = FindNearestFruitDistance(board);
-            var adjacentApple = neighbors.FirstOrDefault(candidate => board.IsFruit(candidate.pos));
-            if (board.IsFruit(adjacentApple.pos))
-                return adjacentApple.pos;
-
-            var plannedMove = AppleRoutePlanner.FindBestMove(board, currentHead, _runtimeVisited);
-            if (plannedMove.HasValue)
+            var plannedMove = AppleRoutePlanner.FindBestMove(
+                board, currentHead, _runtimeVisited, lastPos, preferGlobalFrontier: false);
+            if (plannedMove.HasValue && board.IsValidMove(plannedMove.Value))
                 return plannedMove.Value;
+
+            var currentFruitDistance = FindNearestFruitDistance(board);
 
             var nearestAppleDistance = FindNearestFruitDistance(board);
             // The persisted Q-table is only a tie-breaker. Runtime geometry must

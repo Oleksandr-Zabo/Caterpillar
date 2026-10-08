@@ -20,47 +20,27 @@ namespace Caterpillar.Algorithms
 
         public int PlannedApples => _plannedApples;
 
-        public Task PrepareAsync(GameBoard board, int stepsLimit, System.IProgress<string> progress, CancellationToken cancellationToken = default)
+        public async Task PrepareAsync(GameBoard board, int stepsLimit, System.IProgress<string> progress, CancellationToken cancellationToken = default)
         {
-            // Movement is selected online so every step can use the current three-move apple horizon.
             _plan.Clear();
             _runtimeVisited.Clear();
             cancellationToken.ThrowIfCancellationRequested();
             _plannedApples = 0;
-            progress?.Report("Backtracking: using three-move local apple planning.");
-            return Task.CompletedTask;
+            await Task.Run(() => AppleRoutePlanner.FindBestMove(board, board.CaterpillarHead, null, null), cancellationToken);
+            progress?.Report("Backtracking: prepared density lookahead route.");
         }
 
         public (int x, int y) GetNextMove(GameBoard board, (int x, int y) currentHead, (int x, int y)? lastPos)
         {
             _runtimeVisited.Add(currentHead);
-            if (_plan.Count > 0)
-            {
-                // return next valid planned move; skip any that became invalid
-                while (_plan.Count > 0)
-                {
-                    var p = _plan.Dequeue();
-                    if (p.x < 0 || p.x >= board.Rows || p.y < 0 || p.y >= board.Cols) continue;
-                    if (!board.IsValidMove(p)) continue;
-                    return p;
-                }
-            }
+            var plannedMove = AppleRoutePlanner.FindBestMove(
+                board, currentHead, _runtimeVisited, lastPos, preferGlobalFrontier: true);
+            if (plannedMove.HasValue)
+                return plannedMove.Value;
 
             var neighbors = GetNeighbors(currentHead, board)
                 .Where(board.IsValidMove)
                 .ToList();
-
-            var adjacentApple = neighbors
-                .Where(board.IsFruit)
-                .OrderBy(n => _runtimeVisited.Contains(n))
-                .FirstOrDefault();
-            if (board.IsFruit(adjacentApple))
-                return adjacentApple;
-
-            var plannedMove = AppleRoutePlanner.FindBestMove(board, currentHead, _runtimeVisited);
-            if (plannedMove.HasValue)
-                return plannedMove.Value;
-
             var best = neighbors
                 .OrderBy(n => _runtimeVisited.Contains(n))
                 .ThenBy(n => n.x)

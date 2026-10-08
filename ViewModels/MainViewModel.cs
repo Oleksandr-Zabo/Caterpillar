@@ -14,7 +14,7 @@ namespace Caterpillar.ViewModels
 {
     public sealed class MainViewModel : BaseViewModel
     {
-        private const int DefaultStepsLimit = 500;
+        private const int DefaultStepsLimit = 600;
         private const int DefaultAnimationSpeed = 50;
         private const int MinimumAnimationSpeed = 0;
         private const int MaximumAnimationSpeed = 2000;
@@ -33,7 +33,7 @@ namespace Caterpillar.ViewModels
         private int _stepsTaken;
         private double _headRotation;
         private readonly Dictionary<string, QLearningAgent> _qLearningCache = new();
-        private readonly Dictionary<string, long> _decisionTimeCache = new();
+        private readonly Dictionary<string, double> _decisionTimeCache = new();
         private int _runId;
         private readonly object _runGate = new();
 
@@ -103,7 +103,7 @@ namespace Caterpillar.ViewModels
             AlgorithmName = algorithm.Name;
             Status = $"{algorithm.Name}: preparing...";
 
-            var cacheKey = $"{algorithm.Name}:{_initialBoard.LayoutKey}";
+            var cacheKey = $"{algorithm.Name}:{StepsLimit}:{_initialBoard.LayoutKey}";
             if (algorithm is QLearningAgent && _qLearningCache.TryGetValue(cacheKey, out var preparedAgent))
             {
                 algorithm = preparedAgent;
@@ -115,17 +115,17 @@ namespace Caterpillar.ViewModels
             {
                 if (_decisionTimeCache.TryGetValue(cacheKey, out var cachedDecisionTime))
                 {
-                    DecisionTime = $"Decision time: {cachedDecisionTime} ms (cached)";
+                    DecisionTime = $"Decision time: {cachedDecisionTime:F3} ms (cached)";
                 }
                 else
                 {
                     await algorithm.PrepareAsync(_activeBoard, StepsLimit, null!, token);
                     decisionTimer.Stop();
-                    var elapsed = decisionTimer.ElapsedMilliseconds;
+                    var elapsed = Math.Max(0.001, decisionTimer.Elapsed.TotalMilliseconds);
                     _decisionTimeCache[cacheKey] = elapsed;
                     if (algorithm is QLearningAgent prepared)
                         _qLearningCache[cacheKey] = prepared;
-                    DecisionTime = $"Decision time: {elapsed} ms";
+                    DecisionTime = $"Decision time: {elapsed:F3} ms";
                 }
                 Status = $"{algorithm.Name}: running";
 

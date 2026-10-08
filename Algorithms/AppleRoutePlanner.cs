@@ -7,78 +7,142 @@ namespace Caterpillar.Algorithms
 {
     public static class AppleRoutePlanner
     {
-        private const int ClusterRadius = 4;
-        private const int CandidateLimit = 24;
-        private const double DistanceWeight = 12.0;
-        private const double ClusterWeight = 22.0;
-        private const double AdjacentChainWeight = 35.0;
+        private const int SearchDepth = 28;
+        private const int BeamWidth = 80;
+        private const double AppleReward = 10000.0;
+        private const double FutureAppleReward = 70.0;
+        private const double TravelPenalty = 1.0;
+        private const double ReversePenalty = 35.0;
+        private const double RevisitPenalty = 0.25;
+        private const double FrontierReward = 180.0;
 
         public static (int x, int y)? FindBestMove(
             GameBoard board,
             (int x, int y) head,
-            IReadOnlySet<(int x, int y)>? visited = null)
+            IReadOnlySet<(int x, int y)>? visited = null,
+            (int x, int y)? previous = null,
+            bool preferGlobalFrontier = true)
         {
-            var moves = Neighbors(head)
-                .Where(board.IsValidMove)
-                .ToList();
-            if (moves.Count == 0)
+            var legalMoves = Neighbors(head).Where(board.IsValidPosition).ToList();
+            if (legalMoves.Count == 0)
                 return null;
-
-            var adjacent = moves
-                .Where(board.IsFruit)
-                .OrderBy(move => visited?.Contains(move) ?? false)
-                .FirstOrDefault();
-            if (board.IsFruit(adjacent))
-                return adjacent;
 
             var apples = board.Cells.Cast<GridCell>()
                 .Where(cell => cell.Type == CellType.Apple || cell.Type == CellType.Grape)
                 .Select(cell => (x: cell.X, y: cell.Y))
-                .ToList();
+                .ToHashSet();
             if (apples.Count == 0)
-                return moves.OrderBy(move => visited?.Contains(move) ?? false).First();
+                return SelectFallback(legalMoves, previous, visited);
 
-            var targets = apples
-                .OrderBy(apple => Manhattan(head, apple))
-                .Take(CandidateLimit)
-                .ToList();
+            var frontier = new List<SearchNode>();
+            foreach (var move in legalMoves)
+            {
+                var remaining = new HashSet<(int x, int y)>(apples);
+                var collected = remaining.Remove(move) ? 1 : 0;
+                frontier.Add(new SearchNode(
+                    move,
+                    move,
+                    head,
+                    1,
+                    collected,
+                    remaining,
+                    new HashSet<(int x, int y)> { head, move }));
+            }
 
-            return moves
-                .Select(move => new
+            SearchNode? best = null;
+            for (var depth = 1; depth <= SearchDepth && frontier.Count > 0; depth++)
+            {
+                foreach (var node in frontier)
                 {
-                    Move = move,
-                    Score = targets.Max(apple => ScoreMove(board, move, apple, apples, visited))
-                })
-                .OrderByDescending(item => item.Score)
-                .ThenBy(item => visited?.Contains(item.Move) ?? false)
-                .ThenBy(item => Manhattan(head, item.Move))
-                .First().Move;
+                    if (best is null || Evaluate(node, apples, visited, previous, preferGlobalFrontier) >
+                        Evaluate(best, apples, visited, previous, preferGlobalFrontier))
+                        best = node;
+                }
+
+                var nextFrontier = new List<SearchNode>();
+                foreach (var node in frontier)
+                {
+                    foreach (var next in Neighbors(node.Position))
+                    {
+                        if (!board.IsValidPosition(next))
+                            continue;
+
+                        var remaining = new HashSet<(int x, int y)>(node.Remaining);
+                        var collected = node.Collected;
+                        if (remaining.Remove(next))
+                            collected++;
+
+                        var path = new HashSet<(int x, int y)>(node.Path) { next };
+                        nextFrontier.Add(new SearchNode(
+                            next,
+                            node.FirstMove,
+                            node.Position,
+                            node.Depth + 1,
+                            collected,
+                            remaining,
+                            path));
+                    }
+                }
+
+                frontier = nextFrontier
+                    .OrderByDescending(node => Evaluate(node, apples, visited, previous, preferGlobalFrontier))
+                    .Take(BeamWidth)
+                    .ToList();
+            }
+
+            return best?.FirstMove ?? SelectFallback(legalMoves, previous, visited);
         }
 
-        private static double ScoreMove(
-            GameBoard board,
-            (int x, int y) move,
-            (int x, int y) target,
-            List<(int x, int y)> apples,
-            IReadOnlySet<(int x, int y)>? visited)
+        private static double Evaluate(
+            SearchNode node,
+            HashSet<(int x, int y)> allApples,
+            IReadOnlySet<(int x, int y)>? visited,
+            (int x, int y)? previous,
+            bool preferGlobalFrontier)
         {
-            var distance = Manhattan(move, target);
-            var cluster = apples.Count(apple => Manhattan(target, apple) <= ClusterRadius);
-            var adjacentChain = Neighbors(target).Count(board.IsFruit);
-            var revisitPenalty = visited?.Contains(move) == true ? 80.0 : 0.0;
-            return cluster * ClusterWeight + adjacentChain * AdjacentChainWeight -
-                   distance * DistanceWeight - revisitPenalty;
+            var futureDensity = Neighbors(node.Position).Count(node.Remaining.Contains);
+            var score = node.Collected * AppleReward +
+                        futureDensity * FutureAppleReward -
+                        node.Depth * TravelPenalty;
+
+            if (preferGlobalFrontier)
+            {
+                var frontier = node.Remaining.Count(apple =>
+                    Math.Abs(apple.x - node.Position.x) <= 3 &&
+                    Math.Abs(apple.y - node.Position.y) <= 3);
+                score += frontier * FrontierReward;
+            }
+
+            if (previous.HasValue && node.FirstMove == previous.Value)
+                score -= ReversePenalty;
+            if (visited?.Contains(node.FirstMove) == true)
+                score -= RevisitPenalty;
+            return score;
         }
 
-        private static int Manhattan((int x, int y) a, (int x, int y) b) =>
-            Math.Abs(a.x - b.x) + Math.Abs(a.y - b.y);
+        private static (int x, int y) SelectFallback(
+            List<(int x, int y)> moves,
+            (int x, int y)? previous,
+            IReadOnlySet<(int x, int y)>? visited) =>
+            moves.OrderBy(move => previous.HasValue && move == previous.Value)
+                 .ThenBy(move => visited?.Contains(move) ?? false)
+                 .First();
 
-        private static IEnumerable<(int x, int y)> Neighbors((int x, int y) p)
+        private static IEnumerable<(int x, int y)> Neighbors((int x, int y) position)
         {
-            yield return (p.x - 1, p.y);
-            yield return (p.x + 1, p.y);
-            yield return (p.x, p.y - 1);
-            yield return (p.x, p.y + 1);
+            yield return (position.x - 1, position.y);
+            yield return (position.x + 1, position.y);
+            yield return (position.x, position.y - 1);
+            yield return (position.x, position.y + 1);
         }
+
+        private sealed record SearchNode(
+            (int x, int y) Position,
+            (int x, int y) FirstMove,
+            (int x, int y) PreviousPosition,
+            int Depth,
+            int Collected,
+            HashSet<(int x, int y)> Remaining,
+            HashSet<(int x, int y)> Path);
     }
 }
