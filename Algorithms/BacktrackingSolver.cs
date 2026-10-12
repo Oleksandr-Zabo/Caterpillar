@@ -8,7 +8,7 @@ using Caterpillar.Models;
 
 namespace Caterpillar.Algorithms
 {
-    // Simple backtracking / greedy solver that tries to eat nearby apples using DFS with custom stack
+    
     public class BacktrackingSolver : IAlgorithm
     {
         private const int LocalAppleLookahead = 3;
@@ -26,7 +26,14 @@ namespace Caterpillar.Algorithms
             _runtimeVisited.Clear();
             cancellationToken.ThrowIfCancellationRequested();
             _plannedApples = 0;
-            await Task.Run(() => AppleRoutePlanner.FindBestMove(board, board.CaterpillarHead, null, null), cancellationToken);
+            await Task.Run(
+                () => AppleRoutePlanner.FindBestMove(
+                    board,
+                    board.CaterpillarHead,
+                    visited: null,
+                    previous: null,
+                    preferGlobalFrontier: true),
+                cancellationToken);
             progress?.Report("Backtracking: prepared density lookahead route.");
         }
 
@@ -52,38 +59,7 @@ namespace Caterpillar.Algorithms
             return currentHead;
         }
 
-        private (int x, int y)? FindClosestAppleMove(
-            GameBoard board,
-            (int x, int y) start,
-            List<(int x, int y)> neighbors)
-        {
-            var apples = board.Cells.Cast<GridCell>()
-                .Where(cell => cell.Type == CellType.Apple)
-                .Select(cell => (cell.X, cell.Y))
-                .ToList();
-            if (apples.Count == 0)
-                return null;
-
-            return neighbors
-                .OrderBy(move => apples.Min(apple => Math.Abs(move.Item1 - apple.X) + Math.Abs(move.Item2 - apple.Y)))
-                .ThenBy(move => _runtimeVisited.Contains(move))
-                .FirstOrDefault();
-        }
-
-        private (int x, int y)? FindBestAppleComponentMove(GameBoard board, (int x, int y) start)
-        {
-            var components = FindAppleComponents(board);
-            if (components.Count == 0)
-                return null;
-
-            var selected = components
-                .OrderByDescending(component => component.Count * 100 -
-                    ManhattanDistanceToComponent(start, component) * ComponentDistancePenalty)
-                .ThenBy(component => ManhattanDistanceToComponent(start, component))
-                .First();
-
-            return FindPathMoveToTargets(board, start, selected);
-        }
+       
 
         private List<List<(int x, int y)>> FindAppleComponents(GameBoard board)
         {

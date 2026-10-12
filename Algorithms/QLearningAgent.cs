@@ -25,12 +25,11 @@ namespace Caterpillar.Algorithms
         private const int EpisodesPerWorker = 96;
         private const int LocalAppleLookahead = 3;
         private const double LocalAppleReward = 35.0;
-        private const double DistanceReward = 8.0;
         private const double EmptyMovePenalty = 12.0;
         private const double RevisitPenalty = 80.0;
         private const double ReverseMovePenalty = 35.0;
-        private const double LineProgressReward = 30.0;
-        private const double LineTargetBonus = 900.0;
+        private const int RuntimeHistorySize = 8;
+        private const double RuntimeCyclePenalty = 2500.0;
         private const double LearningRate = 0.1;
         private const double DiscountFactor = 0.9;
         private const double InitialExploration = 0.8;
@@ -40,10 +39,8 @@ namespace Caterpillar.Algorithms
         public string Name => "Q-Learning";
         private readonly CustomHash<double[]> _q = new(512);
         private readonly Random _rng = new();
-        private readonly string[] _actions = new[] { "U", "D", "L", "R" };
-        private readonly HashSet<(int x, int y)> _runtimeVisited = new();
         private readonly Dictionary<(int x, int y), int> _runtimeVisitCounts = new();
-        private readonly Dictionary<string, int> _runtimeStateVisits = new();
+        private readonly Queue<(int x, int y)> _runtimePositionHistory = new();
         private (int x, int y)? _runtimeLastHead;
         private readonly bool _workerMode;
         private readonly int _workerEpisodes;
@@ -268,26 +265,6 @@ namespace Caterpillar.Algorithms
             progress?.Report("QLearning: ready.");
         }
 
-        // Helper: find nearest apple and return delta and manhattan distance
-        private (int adx, int ady, int dist) NearestAppleDelta(GameBoard board, (int x, int y) head)
-        {
-            int bestDist = int.MaxValue;
-            (int ax, int ay) best = (-1, -1);
-            for (int r = 0; r < board.Rows; r++)
-            for (int c = 0; c < board.Cols; c++)
-            {
-                if (!board.IsFruit((r, c))) continue;
-                int d = Math.Abs(head.x - r) + Math.Abs(head.y - c);
-                if (d < bestDist)
-                {
-                    bestDist = d;
-                    best = (r, c);
-                }
-            }
-            if (bestDist == int.MaxValue) return (0, 0, int.MaxValue);
-            return (best.ax - head.x, best.ay - head.y, bestDist);
-        }
-
         private int GetAction((int x, int y) from, (int x, int y) to)
         {
             if (to.x < from.x) return 0;
@@ -333,29 +310,11 @@ namespace Caterpillar.Algorithms
             return result;
         }
 
-        private static List<int> SafeActions(GameBoard board, (int x, int y) head,
-            (int x, int y)? lastPos, bool[] dangers)
-        {
-            var result = new List<int>();
-            foreach (var action in Enumerable.Range(0, 4))
-            {
-                var next = ApplyAction(head, action);
-                if (board.IsValidMove(next))
-                    result.Add(action);
-            }
-            return result;
-        }
-
         private static bool[] GetDangerMap(GameBoard board, (int x, int y) head)
         {
             return Enumerable.Range(0, ActionCount)
                 .Select(action => !board.IsValidPosition(ApplyAction(head, action)))
                 .ToArray();
-        }
-
-        private static bool IsFreeCell(GameBoard board, (int x, int y) position)
-        {
-            return board.IsValidPosition(position);
         }
 
         private static (int x, int y) ApplyAction((int x, int y) head, int action) => action switch
@@ -419,16 +378,17 @@ namespace Caterpillar.Algorithms
         {
             if (_runtimeLastHead == null)
             {
-                _runtimeVisited.Clear();
                 _runtimeVisitCounts.Clear();
-            _runtimeStateVisits.Clear();
+                _runtimePositionHistory.Clear();
             }
-            _runtimeVisited.Add(currentHead);
             _runtimeVisitCounts[currentHead] = _runtimeVisitCounts.GetValueOrDefault(currentHead) + 1;
+            if (_runtimePositionHistory.Count == 0 || _runtimePositionHistory.Last() != currentHead)
+            {
+                _runtimePositionHistory.Enqueue(currentHead);
+                while (_runtimePositionHistory.Count > RuntimeHistorySize)
+                    _runtimePositionHistory.Dequeue();
+            }
             _runtimeLastHead = currentHead;
-
-            var runtimeState = RuntimeStateKey(board, currentHead);
-            _runtimeStateVisits[runtimeState] = _runtimeStateVisits.GetValueOrDefault(runtimeState) + 1;
 
             var dangers = GetDangerMap(board, currentHead);
             var legalNeighbors = new List<((int x, int y) pos, int actionIdx)>();
@@ -455,19 +415,23 @@ namespace Caterpillar.Algorithms
             if (neighbors.Count == 0 && legalNeighbors.Count > 0)
                 neighbors = legalNeighbors;
 
-            var plannedMove = AppleRoutePlanner.FindBestMove(
-                board, currentHead, _runtimeVisited, lastPos, preferGlobalFrontier: false);
-            if (plannedMove.HasValue && board.IsValidMove(plannedMove.Value))
-                return plannedMove.Value;
+            int previousAction = lastPos.HasValue ? GetAction(lastPos.Value, currentHead) : -1;
+            var nonReverseNeighbors = neighbors
+                .Where(n => n.actionIdx != Opposite(previousAction))
+                .ToList();
+            if (nonReverseNeighbors.Count > 0)
+                neighbors = nonReverseNeighbors;
 
             var currentFruitDistance = FindNearestFruitDistance(board);
 
             var nearestAppleDistance = FindNearestFruitDistance(board);
             // The persisted Q-table is only a tie-breaker. Runtime geometry must
             // decide first, otherwise an old policy can walk away from reachable fruit.
-            int previousAction = lastPos.HasValue ? GetAction(lastPos.Value, currentHead) : -1;
             var key = StateKey(board, currentHead, previousAction);
             var qvals = GetQValues(key);
+            var qMin = qvals.Min();
+            var qMax = qvals.Max();
+            var qRange = qMax - qMin;
 
             double best = double.NegativeInfinity;
             var bestList = new List<((int x, int y) pos, int idx)>();
@@ -487,8 +451,12 @@ namespace Caterpillar.Algorithms
                     val -= localDistance * 250.0;
                 if (nearestAppleDistance != int.MaxValue && fruitDistance < nearestAppleDistance)
                     val += 1200.0;
-                val += Math.Clamp(qvals[n.actionIdx], -5.0, 5.0);
+                var normalizedQ = qRange > 0.000001
+                    ? (qvals[n.actionIdx] - qMin) / qRange
+                    : 0.0;
+                val += normalizedQ * 1800.0;
                 if (_runtimeVisitCounts.TryGetValue(n.pos, out var visits)) val -= RevisitPenalty * visits;
+                if (_runtimePositionHistory.Contains(n.pos)) val -= RuntimeCyclePenalty;
                 if (n.actionIdx == Opposite(previousAction)) val -= ReverseMovePenalty;
                 val += _rng.NextDouble() * 0.05;
                 if (val > best)
@@ -542,34 +510,6 @@ namespace Caterpillar.Algorithms
             return best;
         }
 
-        private static (int x, int y)? FindBestAppleComponentMove(GameBoard board, (int x, int y) start)
-        {
-            var components = FindAppleComponents(board);
-            if (components.Count == 0)
-                return null;
-
-            var selected = components
-                .OrderByDescending(line => line.Count * 100 -
-                    line.Min(cell => Math.Abs(cell.x - start.x) + Math.Abs(cell.y - start.y)) * 4)
-                .First();
-            var targets = selected.ToHashSet();
-            var queue = new Queue<((int x, int y) position, (int x, int y) first)>();
-            var visited = new HashSet<(int x, int y)> { start };
-            queue.Enqueue((start, start));
-            while (queue.Count > 0)
-            {
-                var (current, first) = queue.Dequeue();
-                foreach (var next in Neighbors(current))
-                {
-                    if (!board.IsValidPosition(next) || !visited.Add(next)) continue;
-                    var firstStep = current == start ? next : first;
-                    if (targets.Contains(next)) return firstStep;
-                    queue.Enqueue((next, firstStep));
-                }
-            }
-            return null;
-        }
-
         private static List<List<(int x, int y)>> FindAppleComponents(GameBoard board)
         {
             var components = new List<List<(int x, int y)>>();
@@ -604,43 +544,6 @@ namespace Caterpillar.Algorithms
                 .Select(cell => Math.Abs(cell.X - head.x) + Math.Abs(cell.Y - head.y))
                 .DefaultIfEmpty(int.MaxValue)
                 .Min();
-        }
-
-        private static (int x, int y)? FindLocalFruitMove(GameBoard board, (int x, int y) start)
-        {
-            var queue = new Queue<((int x, int y) position, (int x, int y) first, int distance)>();
-            var visited = new HashSet<(int x, int y)> { start };
-            queue.Enqueue((start, start, 0));
-            var candidates = new List<((int x, int y) first, int distance)>();
-
-            while (queue.Count > 0)
-            {
-                var (current, first, distance) = queue.Dequeue();
-                if (distance >= LocalAppleLookahead)
-                    continue;
-
-                foreach (var next in Neighbors(current))
-                {
-                    if (!board.IsValidPosition(next) || !visited.Add(next))
-                        continue;
-
-                    var firstStep = current == start ? next : first;
-                    var nextDistance = distance + 1;
-                    if (board.IsFruit(next))
-                        candidates.Add((firstStep, nextDistance));
-                    queue.Enqueue((next, firstStep, nextDistance));
-                }
-            }
-
-            return candidates
-                .OrderBy(candidate => candidate.distance)
-                .Select(candidate => ((int x, int y)?)candidate.first)
-                .FirstOrDefault();
-        }
-
-        private static string RuntimeStateKey(GameBoard board, (int x, int y) head)
-        {
-            return $"{head.x},{head.y}|{string.Join(';', board.CaterpillarSegments.Select(s => $"{s.x},{s.y}"))}|{board.ApplesRemaining}";
         }
 
         private double[] GetQValues(string key)
@@ -692,9 +595,8 @@ namespace Caterpillar.Algorithms
 
         private void ResetRuntimeState()
         {
-            _runtimeVisited.Clear();
             _runtimeVisitCounts.Clear();
-            _runtimeStateVisits.Clear();
+            _runtimePositionHistory.Clear();
             _runtimeLastHead = null;
         }
 

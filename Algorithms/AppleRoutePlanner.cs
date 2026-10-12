@@ -18,6 +18,7 @@ namespace Caterpillar.Algorithms
         private const double ReversePenalty = 35.0;
         private const double RevisitPenalty = 0.25;
         private const double FrontierReward = 180.0;
+        private const int GlobalFrontierRadius = 6;
 
         public static (int x, int y)? FindBestMove(
             GameBoard board,
@@ -70,6 +71,8 @@ namespace Caterpillar.Algorithms
                     {
                         if (!board.IsValidPosition(next))
                             continue;
+                        if (preferGlobalFrontier && next == node.PreviousPosition)
+                            continue;
 
                         var remaining = new HashSet<(int x, int y)>(node.Remaining);
                         var collected = node.Collected;
@@ -110,8 +113,8 @@ namespace Caterpillar.Algorithms
             if (preferGlobalFrontier)
             {
                 var frontier = node.Remaining.Count(apple =>
-                    Math.Abs(apple.x - node.Position.x) <= 3 &&
-                    Math.Abs(apple.y - node.Position.y) <= 3);
+                    Math.Abs(apple.x - node.Position.x) <= GlobalFrontierRadius &&
+                    Math.Abs(apple.y - node.Position.y) <= GlobalFrontierRadius);
                 score += frontier * FrontierReward;
             }
 
