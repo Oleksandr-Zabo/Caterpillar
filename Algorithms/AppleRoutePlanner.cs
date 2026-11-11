@@ -7,10 +7,10 @@ namespace Caterpillar.Algorithms
 {
     public static class AppleRoutePlanner
     {
-        private const int SearchDepth = 20;
-        private const int EndgameSearchDepth = 14;
-        private const int BeamWidth = 40;
-        private const int EndgameBeamWidth = 24;
+        private const int SearchDepth = 32;
+        private const int EndgameSearchDepth = 22;
+        private const int BeamWidth = 100;
+        private const int EndgameBeamWidth = 50;
         private const int EndgameAppleThreshold = 140;
         private const double AppleReward = 10000.0;
         private const double FutureAppleReward = 70.0;
@@ -71,9 +71,6 @@ namespace Caterpillar.Algorithms
                     {
                         if (!board.IsValidPosition(next))
                             continue;
-                        if (preferGlobalFrontier && next == node.PreviousPosition)
-                            continue;
-
                         var remaining = new HashSet<(int x, int y)>(node.Remaining);
                         var collected = node.Collected;
                         if (remaining.Remove(next))

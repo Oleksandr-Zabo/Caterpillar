@@ -19,7 +19,6 @@ namespace Caterpillar.Models
 
         public Brush GetBrush()
         {
-            // Fruit cells keep a green field background; fruit is drawn separately in XAML.
             return Type switch
             {
                 CellType.Empty => Brushes.PaleGreen,

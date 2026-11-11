@@ -58,7 +58,7 @@
 
                 <GroupBox Header="Algorithms" Margin="0,0,0,10">
                     <StackPanel Margin="8">
-                        <Button Content="Start Backtracking" Command="{Binding StartBacktrackingCommand}" />
+                        <Button Content="Start Beam Search" Command="{Binding StartBeamSearchCommand}" />
                         <Button Content="Start Q-Learning" Command="{Binding StartQLearningCommand}" Margin="0,8,0,0" />
                     </StackPanel>
                 </GroupBox>

@@ -41,7 +41,7 @@ namespace Caterpillar.ViewModels
         {
             ReadFileCommand = new RelayCommand(_ => ReadFile());
             GenerateBoardCommand = ReadFileCommand;
-            StartBacktrackingCommand = new RelayCommand(_ => StartAlgorithm(new BacktrackingSolver()));
+            StartBeamSearchCommand = new RelayCommand(_ => StartAlgorithm(new BeamSearchSolver()));
             StartQLearningCommand = new RelayCommand(_ => StartAlgorithm(new QLearningAgent()));
             ReadFile();
         }
@@ -49,7 +49,7 @@ namespace Caterpillar.ViewModels
         public ObservableCollection<CellViewModel> Cells { get; } = new();
         public ICommand ReadFileCommand { get; }
         public ICommand GenerateBoardCommand { get; }
-        public ICommand StartBacktrackingCommand { get; }
+        public ICommand StartBeamSearchCommand { get; }
         public ICommand StartQLearningCommand { get; }
 
         public int Rows => _activeBoard?.Rows ?? 1;

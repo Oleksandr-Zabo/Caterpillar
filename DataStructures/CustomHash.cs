@@ -4,7 +4,6 @@ using System.Collections.Generic;
 
 namespace Caterpillar.DataStructures
 {
-    // Simple open-addressing hash map for string keys to TValue
     public class CustomHash<TValue>
     {
         private struct Entry { public string Key; public TValue Value; public bool Used; }

@@ -20,9 +20,8 @@ namespace Caterpillar.Algorithms
         private const int MaximumTrainingEpisodes = 100000;
         private const int MaximumTrainingMilliseconds = 300000;
         private const int TrainingYieldInterval = 4;
-        private const int MaximumTrainingSteps = 60;
         private const int ParallelWorkerCount = 4;
-        private const int EpisodesPerWorker = 96;
+        private const int EpisodesPerWorker = 16;
         private const int LocalAppleLookahead = 3;
         private const double LocalAppleReward = 35.0;
         private const double EmptyMovePenalty = 12.0;
@@ -41,7 +40,10 @@ namespace Caterpillar.Algorithms
         private readonly Random _rng = new();
         private readonly Dictionary<(int x, int y), int> _runtimeVisitCounts = new();
         private readonly Queue<(int x, int y)> _runtimePositionHistory = new();
+        private readonly Queue<(int x, int y)> _committedRoute = new();
         private (int x, int y)? _runtimeLastHead;
+        private int _stepsLimit;
+        private int _stepsTaken;
         private readonly bool _workerMode;
         private readonly int _workerEpisodes;
 
@@ -60,14 +62,13 @@ namespace Caterpillar.Algorithms
             progress?.Report("QLearning: preparing...");
             ResetRuntimeState();
             var evaluationSteps = Math.Max(1, stepsLimit);
+            _stepsLimit = evaluationSteps;
             var targetApples = Math.Min(board.Rows * board.Cols, (int)Math.Ceiling(evaluationSteps * TargetAccuracy));
 
-            // Use a simple cache file per board size+applecount to speed training
             var boardKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(board.LayoutKey)))[..16];
-            string bestFname = $"best_qtable_v6_{board.Rows}x{board.Cols}_{boardKey}.json";
-            string fname = $"qtable_v6_{board.Rows}x{board.Cols}_{boardKey}.json";
+            string bestFname = $"best_qtable_v7_{board.Rows}x{board.Cols}_{boardKey}.json";
+            string fname = $"qtable_v7_{board.Rows}x{board.Cols}_{boardKey}.json";
 
-            // prefer best file if present
             var loaded = false;
             if (!_workerMode && File.Exists(bestFname))
             {
@@ -105,7 +106,7 @@ namespace Caterpillar.Algorithms
                     .Select(index => Task.Run(async () =>
                     {
                         var worker = new QLearningAgent(EpisodesPerWorker);
-                        await worker.PrepareAsync(board, stepsLimit, null, cancellationToken);
+                        await worker.PrepareAsync(board, stepsLimit, null!, cancellationToken);
                         var score = worker.EvaluatePolicy(board, evaluationSteps, cancellationToken);
                         return (worker, score);
                     }, cancellationToken))
@@ -119,20 +120,15 @@ namespace Caterpillar.Algorithms
                 return;
             }
 
-            // Perform Q-Learning training using episodes on the provided board
-            // Increase episodes proportional to board size to obtain stronger policies
             int episodes = _workerMode ? _workerEpisodes : MaximumTrainingEpisodes;
             double alpha = LearningRate;
             double gamma = DiscountFactor;
             double epsilon = InitialExploration;
             double epsilonMin = MinimumExploration;
             double epsilonDecay = ExplorationDecay;
-            int maxStepsPerEpisode = Math.Clamp(board.Rows * board.Cols / 35, 30, MaximumTrainingSteps);
+            int maxStepsPerEpisode = Math.Max(30, stepsLimit);
             var trainingTimer = System.Diagnostics.Stopwatch.StartNew();
 
-            // q entries are created on demand during training
-
-            // training episodes
             for (int ep = 0; ep < episodes; ep++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -153,7 +149,6 @@ namespace Caterpillar.Algorithms
                         break;
                 }
 
-                // clone board to run episode without affecting UI board
                 var env = new GameBoard(board);
                 var lastPos = env.LastPosition;
                 var head = env.CaterpillarHead;
@@ -164,7 +159,6 @@ namespace Caterpillar.Algorithms
                 for (int step = 0; step < maxStepsPerEpisode; step++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    // collect valid actions
                     var cand = new[] { (head.x - 1, head.y), (head.x + 1, head.y), (head.x, head.y - 1), (head.x, head.y + 1) };
                     var valid = LegalActions(env, head, null);
                     if (valid.Count == 0)
@@ -189,7 +183,6 @@ namespace Caterpillar.Algorithms
                     }
                     else
                     {
-                        // choose best among valid
                         double best = double.NegativeInfinity;
                         var bestActions = new List<int>();
                         foreach (var a in preferredValid)
@@ -210,7 +203,6 @@ namespace Caterpillar.Algorithms
                     var nextPos = cand[actionIdx];
                     bool revisited = visited.Contains(nextPos);
                     bool ate = env.MoveCaterpillarTo(nextPos);
-                    // reward shaping: base reward and distance-based bonus
                     var newDist = ManhattanDistanceToNearestFruit(env, env.CaterpillarHead);
                     double reward = ate ? 180.0 : -EmptyMovePenalty;
                     if (revisited) reward -= RevisitPenalty;
@@ -229,20 +221,20 @@ namespace Caterpillar.Algorithms
                     var nextKey = StateKey(env, env.CaterpillarHead, actionIdx);
                     var nextQ = GetQValues(nextKey);
                     double maxNext = double.NegativeInfinity;
-                    foreach (var a in new int[] { 0, 1, 2, 3 }) if (nextQ[a] > maxNext) maxNext = nextQ[a];
+                    foreach (var a in LegalActions(env, env.CaterpillarHead, null))
+                        if (nextQ[a] > maxNext) maxNext = nextQ[a];
                     if (maxNext == double.NegativeInfinity) maxNext = 0;
 
-                    // Q-learning update
                     var curQ = qvals[actionIdx];
                     qvals[actionIdx] = curQ + alpha * (reward + gamma * maxNext - curQ);
+                    epsilon = Math.Max(epsilonMin, epsilon * epsilonDecay);
 
-                    // prepare for next step
                     lastPos = null;
                     head = env.CaterpillarHead;
                     visited.Add(head);
                     previousAction = actionIdx;
 
-                    if (env.ApplesRemaining == 0) break; // episode finished
+                    if (env.ApplesRemaining == 0) break;
                 }
             }
 
@@ -252,7 +244,6 @@ namespace Caterpillar.Algorithms
                 progress?.Report($"QLearning: final accuracy {finalScore}/{evaluationSteps} ({AccuracyPercent(finalScore, evaluationSteps):F1}%).");
             }
 
-            // Write the table for future runs. It will be evaluated again before reuse.
             try
             {
                 var dict = _q.ToDictionary();
@@ -346,10 +337,10 @@ namespace Caterpillar.Algorithms
             int relX = fruit.HasValue ? Math.Sign(fruit.Value.x - head.x) : 0;
             int relY = fruit.HasValue ? Math.Sign(fruit.Value.y - head.y) : 0;
             var dangers = GetDangerMap(board, head);
-            return $"AppleDir:{relX},{relY}|Danger:{(dangers[0] ? 1 : 0)}{(dangers[1] ? 1 : 0)}{(dangers[2] ? 1 : 0)}{(dangers[3] ? 1 : 0)}|LastDir:{previousAction + 1}";
+            var localFruitCount = CountNearbyFruit(board, head, 3);
+            return $"AppleDir:{relX},{relY}|Distance:{ManhattanDistanceToNearestFruit(board, head)}|Local:{localFruitCount}|Danger:{(dangers[0] ? 1 : 0)}{(dangers[1] ? 1 : 0)}{(dangers[2] ? 1 : 0)}{(dangers[3] ? 1 : 0)}|LastDir:{previousAction + 1}";
         }
 
-        // Public helpers to save/load Q-table
         public void SaveToFile(string path)
         {
             try
@@ -390,6 +381,50 @@ namespace Caterpillar.Algorithms
             }
             _runtimeLastHead = currentHead;
 
+            var beamMove = AppleRoutePlanner.FindBestMove(
+                board,
+                currentHead,
+                _runtimePositionHistory.ToHashSet(),
+                lastPos,
+                preferGlobalFrontier: true);
+            if (beamMove.HasValue && board.IsValidMove(beamMove.Value))
+            {
+                _committedRoute.Clear();
+                _stepsTaken++;
+                return beamMove.Value;
+            }
+
+            if (_committedRoute.Count > 0 &&
+                Neighbors(currentHead).Any(board.IsFruit) &&
+                !board.IsFruit(_committedRoute.Peek()))
+            {
+                _committedRoute.Clear();
+            }
+
+            if (_committedRoute.Count == 0 ||
+                !board.IsValidMove(_committedRoute.Peek()))
+            {
+                _committedRoute.Clear();
+                var route = GraphRoutePlanner.FindBestRoute(
+                    board,
+                    currentHead,
+                    Math.Max(0, _stepsLimit - _stepsTaken),
+                    lastPos,
+                    _runtimePositionHistory.ToHashSet());
+                if (route is not null)
+                {
+                    foreach (var move in route.Moves.Take(1))
+                        _committedRoute.Enqueue(move);
+                }
+            }
+
+            if (_committedRoute.Count > 0 &&
+                board.IsValidMove(_committedRoute.Peek()))
+            {
+                _stepsTaken++;
+                return _committedRoute.Dequeue();
+            }
+
             var dangers = GetDangerMap(board, currentHead);
             var legalNeighbors = new List<((int x, int y) pos, int actionIdx)>();
             var safeNeighbors = new List<((int x, int y) pos, int actionIdx)>();
@@ -407,9 +442,6 @@ namespace Caterpillar.Algorithms
 
             if (legalNeighbors.Count == 0) return currentHead;
 
-            // The forward-space check is a heuristic, not a second collision
-            // rule. If it rejects every legal move, keep moving safely rather
-            // than returning the current head and ending the simulation.
             var neighbors = safeNeighbors.Count > 0 ? safeNeighbors : legalNeighbors;
 
             if (neighbors.Count == 0 && legalNeighbors.Count > 0)
@@ -425,10 +457,14 @@ namespace Caterpillar.Algorithms
             var currentFruitDistance = FindNearestFruitDistance(board);
 
             var nearestAppleDistance = FindNearestFruitDistance(board);
-            // The persisted Q-table is only a tie-breaker. Runtime geometry must
-            // decide first, otherwise an old policy can walk away from reachable fruit.
             var key = StateKey(board, currentHead, previousAction);
             var qvals = GetQValues(key);
+            var graphMove = GraphRoutePlanner.FindBestMove(
+                board,
+                currentHead,
+                Math.Max(0, _stepsLimit - _stepsTaken),
+                lastPos,
+                _runtimePositionHistory.ToHashSet());
             var qMin = qvals.Min();
             var qMax = qvals.Max();
             var qRange = qMax - qMin;
@@ -455,6 +491,8 @@ namespace Caterpillar.Algorithms
                     ? (qvals[n.actionIdx] - qMin) / qRange
                     : 0.0;
                 val += normalizedQ * 1800.0;
+                if (graphMove.HasValue && n.pos == graphMove.Value)
+                    val += 6000.0;
                 if (_runtimeVisitCounts.TryGetValue(n.pos, out var visits)) val -= RevisitPenalty * visits;
                 if (_runtimePositionHistory.Contains(n.pos)) val -= RuntimeCyclePenalty;
                 if (n.actionIdx == Opposite(previousAction)) val -= ReverseMovePenalty;
@@ -478,6 +516,7 @@ namespace Caterpillar.Algorithms
                 return neighbors[0].pos;
 
             var choice = bestList[_rng.Next(bestList.Count)];
+            _stepsTaken++;
             return choice.pos;
         }
 
@@ -597,7 +636,31 @@ namespace Caterpillar.Algorithms
         {
             _runtimeVisitCounts.Clear();
             _runtimePositionHistory.Clear();
+            _committedRoute.Clear();
             _runtimeLastHead = null;
+            _stepsTaken = 0;
+        }
+
+        private static int CountNearbyFruit(
+            GameBoard board,
+            (int x, int y) center,
+            int radius)
+        {
+            var count = 0;
+            for (var x = Math.Max(0, center.x - radius);
+                 x <= Math.Min(board.Rows - 1, center.x + radius);
+                 x++)
+            {
+                for (var y = Math.Max(0, center.y - radius);
+                     y <= Math.Min(board.Cols - 1, center.y + radius);
+                     y++)
+                {
+                    if (board.IsFruit((x, y)))
+                        count++;
+                }
+            }
+
+            return count;
         }
 
         private int EvaluatePolicy(
