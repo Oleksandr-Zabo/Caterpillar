@@ -18,10 +18,11 @@ namespace Caterpillar.Algorithms
         private const double TargetAccuracy = 0.915;
         private const int EvaluationInterval = 256;
         private const int MaximumTrainingEpisodes = 100000;
-        private const int MaximumTrainingMilliseconds = 300000;
+        private const int MaximumPreparationMilliseconds = 180000;
+        private const int MaximumTrainingMilliseconds = MaximumPreparationMilliseconds;
         private const int TrainingYieldInterval = 4;
-        private const int ParallelWorkerCount = 4;
-        private const int EpisodesPerWorker = 16;
+        private const int ParallelWorkerCount = 2;
+        private const int EpisodesPerWorker = 8;
         private const int LocalAppleLookahead = 3;
         private const double LocalAppleReward = 35.0;
         private const double EmptyMovePenalty = 12.0;
@@ -35,7 +36,9 @@ namespace Caterpillar.Algorithms
         private const double MinimumExploration = 0.01;
         private const double ExplorationDecay = 0.9998;
 
-        public string Name => "Q-Learning";
+        public string Name => _mode == QLearningMode.Train
+            ? "Q-Learning (Train)"
+            : "Q-Learning (Run)";
         private readonly CustomHash<double[]> _q = new(512);
         private readonly Random _rng = new();
         private readonly Dictionary<(int x, int y), int> _runtimeVisitCounts = new();
@@ -46,12 +49,20 @@ namespace Caterpillar.Algorithms
         private int _stepsTaken;
         private readonly bool _workerMode;
         private readonly int _workerEpisodes;
+        private readonly QLearningMode _mode;
+        private double _epsilon;
+        private bool _updatesEnabled;
 
-        public QLearningAgent()
+        public QLearningAgent() : this(QLearningMode.Train)
         {
         }
 
-        private QLearningAgent(int workerEpisodes)
+        public QLearningAgent(QLearningMode mode)
+        {
+            _mode = mode;
+        }
+
+        private QLearningAgent(int workerEpisodes) : this(QLearningMode.Train)
         {
             _workerMode = true;
             _workerEpisodes = workerEpisodes;
@@ -59,6 +70,9 @@ namespace Caterpillar.Algorithms
 
         public async Task PrepareAsync(GameBoard board, int stepsLimit, IProgress<string> progress, CancellationToken cancellationToken = default)
         {
+            using var preparationDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            preparationDeadline.CancelAfter(MaximumPreparationMilliseconds);
+            var preparationToken = preparationDeadline.Token;
             progress?.Report("QLearning: preparing...");
             ResetRuntimeState();
             var evaluationSteps = Math.Max(1, stepsLimit);
@@ -68,6 +82,25 @@ namespace Caterpillar.Algorithms
             var boardKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(board.LayoutKey)))[..16];
             string bestFname = $"best_qtable_v7_{board.Rows}x{board.Cols}_{boardKey}.json";
             string fname = $"qtable_v7_{board.Rows}x{board.Cols}_{boardKey}.json";
+
+            if (_mode == QLearningMode.Run)
+            {
+                var runFile = File.Exists(bestFname) ? bestFname : fname;
+                if (!File.Exists(runFile))
+                {
+                    throw new InvalidOperationException(
+                        $"No trained Q-table was found for {board.Rows}x{board.Cols}. " +
+                        "Run Training mode first.");
+                }
+
+                LoadFromFile(runFile);
+                _epsilon = 0.0;
+                _updatesEnabled = false;
+                progress?.Report($"QLearning: run mode loaded {Path.GetFileName(runFile)}; epsilon=0; updates disabled.");
+                return;
+            }
+
+            _updatesEnabled = true;
 
             var loaded = false;
             if (!_workerMode && File.Exists(bestFname))
@@ -93,7 +126,18 @@ namespace Caterpillar.Algorithms
 
             if (loaded)
             {
-                var cachedScore = EvaluatePolicy(board, evaluationSteps, cancellationToken);
+                int cachedScore;
+                try
+                {
+                    cachedScore = EvaluatePolicy(board, evaluationSteps, preparationToken);
+                }
+                catch (OperationCanceledException) when (
+                    preparationDeadline.IsCancellationRequested &&
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    progress?.Report("QLearning: preparation deadline reached; keeping the cached policy.");
+                    return;
+                }
                 progress?.Report($"QLearning: cached accuracy {cachedScore}/{evaluationSteps} ({AccuracyPercent(cachedScore, evaluationSteps):F1}%), target {TargetAccuracy:P1}.");
                 if (cachedScore >= targetApples)
                     return;
@@ -106,16 +150,35 @@ namespace Caterpillar.Algorithms
                     .Select(index => Task.Run(async () =>
                     {
                         var worker = new QLearningAgent(EpisodesPerWorker);
-                        await worker.PrepareAsync(board, stepsLimit, null!, cancellationToken);
-                        var score = worker.EvaluatePolicy(board, evaluationSteps, cancellationToken);
-                        return (worker, score);
-                    }, cancellationToken))
+                        try
+                        {
+                            await worker.PrepareAsync(board, stepsLimit, null!, preparationToken);
+                            var score = worker.EvaluatePolicy(board, evaluationSteps, preparationToken);
+                            return ((QLearningAgent worker, int score)?)((worker, score));
+                        }
+                        catch (OperationCanceledException) when (
+                            preparationDeadline.IsCancellationRequested &&
+                            !cancellationToken.IsCancellationRequested)
+                        {
+                            return null;
+                        }
+                    }))
                     .ToArray();
 
-                var results = await Task.WhenAll(candidates);
+                var results = (await Task.WhenAll(candidates))
+                    .Where(result => result.HasValue)
+                    .Select(result => result!.Value)
+                    .ToList();
+                if (results.Count == 0)
+                {
+                    progress?.Report("QLearning: no candidate completed before the preparation deadline; using the current policy.");
+                    return;
+                }
+
                 var bestWorker = results.OrderByDescending(result => result.score).First();
                 _q.LoadFromDictionary(bestWorker.worker._q.ToDictionary());
                 SaveToFile(fname);
+                SaveToFile(bestFname);
                 progress?.Report($"QLearning: selected parallel candidate {bestWorker.score}/{evaluationSteps} ({AccuracyPercent(bestWorker.score, evaluationSteps):F1}%).");
                 return;
             }
@@ -127,6 +190,7 @@ namespace Caterpillar.Algorithms
             double epsilonMin = MinimumExploration;
             double epsilonDecay = ExplorationDecay;
             int maxStepsPerEpisode = Math.Max(30, stepsLimit);
+            _epsilon = epsilon;
             var trainingTimer = System.Diagnostics.Stopwatch.StartNew();
 
             for (int ep = 0; ep < episodes; ep++)
@@ -175,7 +239,7 @@ namespace Caterpillar.Algorithms
                     var qvals = GetQValues(sKey);
 
                     int actionIdx;
-                    if (_rng.NextDouble() < epsilon)
+                    if (_updatesEnabled && _rng.NextDouble() < _epsilon)
                     {
                         actionIdx = ChooseExploratoryAction(preferredValid, cand, visited, head, previousAction);
                         if (actionIdx < 0)
@@ -226,8 +290,10 @@ namespace Caterpillar.Algorithms
                     if (maxNext == double.NegativeInfinity) maxNext = 0;
 
                     var curQ = qvals[actionIdx];
-                    qvals[actionIdx] = curQ + alpha * (reward + gamma * maxNext - curQ);
+                    if (_updatesEnabled)
+                        qvals[actionIdx] = curQ + alpha * (reward + gamma * maxNext - curQ);
                     epsilon = Math.Max(epsilonMin, epsilon * epsilonDecay);
+                    _epsilon = epsilon;
 
                     lastPos = null;
                     head = env.CaterpillarHead;
@@ -249,7 +315,10 @@ namespace Caterpillar.Algorithms
                 var dict = _q.ToDictionary();
                 var txt = JsonSerializer.Serialize(dict);
                 if (!_workerMode)
+                {
                     File.WriteAllText(fname, txt);
+                    File.WriteAllText(bestFname, txt);
+                }
             }
             catch { }
 
@@ -380,6 +449,9 @@ namespace Caterpillar.Algorithms
                     _runtimePositionHistory.Dequeue();
             }
             _runtimeLastHead = currentHead;
+
+            if (_mode == QLearningMode.Run)
+                return GetGreedyRunMove(board, currentHead, lastPos);
 
             var beamMove = AppleRoutePlanner.FindBestMove(
                 board,
@@ -518,6 +590,27 @@ namespace Caterpillar.Algorithms
             var choice = bestList[_rng.Next(bestList.Count)];
             _stepsTaken++;
             return choice.pos;
+        }
+
+        private (int x, int y) GetGreedyRunMove(
+            GameBoard board,
+            (int x, int y) currentHead,
+            (int x, int y)? lastPos)
+        {
+            var previousAction = lastPos.HasValue
+                ? GetAction(lastPos.Value, currentHead)
+                : -1;
+            var qvals = GetQValues(StateKey(board, currentHead, previousAction));
+            var legalActions = LegalActions(board, currentHead, lastPos);
+            if (legalActions.Count == 0)
+                return currentHead;
+
+            var bestAction = legalActions
+                .OrderByDescending(action => qvals[action])
+                .ThenBy(action => action)
+                .First();
+            _stepsTaken++;
+            return ApplyAction(currentHead, bestAction);
         }
 
         private static double BestAppleLineScoreAfterMove(GameBoard board, (int x, int y) position)

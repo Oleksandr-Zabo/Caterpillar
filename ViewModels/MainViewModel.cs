@@ -42,7 +42,9 @@ namespace Caterpillar.ViewModels
             ReadFileCommand = new RelayCommand(_ => ReadFile());
             GenerateBoardCommand = ReadFileCommand;
             StartBeamSearchCommand = new RelayCommand(_ => StartAlgorithm(new BeamSearchSolver()));
-            StartQLearningCommand = new RelayCommand(_ => StartAlgorithm(new QLearningAgent()));
+            StartQLearningTrainingCommand = new RelayCommand(_ => StartAlgorithm(new QLearningAgent(QLearningMode.Train)));
+            StartQLearningRunCommand = new RelayCommand(_ => StartAlgorithm(new QLearningAgent(QLearningMode.Run)));
+            StartQLearningCommand = StartQLearningTrainingCommand;
             ReadFile();
         }
 
@@ -50,6 +52,8 @@ namespace Caterpillar.ViewModels
         public ICommand ReadFileCommand { get; }
         public ICommand GenerateBoardCommand { get; }
         public ICommand StartBeamSearchCommand { get; }
+        public ICommand StartQLearningTrainingCommand { get; }
+        public ICommand StartQLearningRunCommand { get; }
         public ICommand StartQLearningCommand { get; }
 
         public int Rows => _activeBoard?.Rows ?? 1;

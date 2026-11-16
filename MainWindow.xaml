@@ -59,7 +59,8 @@
                 <GroupBox Header="Algorithms" Margin="0,0,0,10">
                     <StackPanel Margin="8">
                         <Button Content="Start Beam Search" Command="{Binding StartBeamSearchCommand}" />
-                        <Button Content="Start Q-Learning" Command="{Binding StartQLearningCommand}" Margin="0,8,0,0" />
+                        <Button Content="Train Q-Learning" Command="{Binding StartQLearningTrainingCommand}" Margin="0,8,0,0" />
+                        <Button Content="Run Q-Learning" Command="{Binding StartQLearningRunCommand}" Margin="0,8,0,0" />
                     </StackPanel>
                 </GroupBox>
 
