@@ -10,12 +10,14 @@ namespace Caterpillar.DataStructures
 
         private Entry[] _entries;
         private int _count;
+        
 
         public CustomHash(int capacity = 256)
         {
             _entries = new Entry[Math.Max(16, capacity)];
             _count = 0;
         }
+        public int Count => _count;
 
         private int IndexFor(string key)
         {

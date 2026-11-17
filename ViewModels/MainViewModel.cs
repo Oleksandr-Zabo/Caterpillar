@@ -20,11 +20,14 @@ namespace Caterpillar.ViewModels
         private const int MaximumAnimationSpeed = 2000;
         private const string BoardFileName = "data.txt";
 
+        private const int FastModeVisualStride = 20;
+
         private GameBoard? _initialBoard;
         private GameBoard? _activeBoard;
         private CancellationTokenSource _operationCts = new();
         private int _stepsLimit = DefaultStepsLimit;
         private int _animationSpeed = DefaultAnimationSpeed;
+        private bool _fastMode;
         private string _status = "Load data.txt to begin.";
         private string _algorithmName = "No algorithm selected";
         private string _decisionTime = "Decision time: 0 ms";
@@ -61,6 +64,17 @@ namespace Caterpillar.ViewModels
         public double CellSize => Math.Max(8, Math.Min(760.0 / Math.Max(1, Cols), 560.0 / Math.Max(1, Rows)));
         public int StepsLimit { get => _stepsLimit; set => Set(ref _stepsLimit, Math.Clamp(value, 1, 100000)); }
         public int AnimationSpeed { get => _animationSpeed; set => Set(ref _animationSpeed, Math.Clamp(value, MinimumAnimationSpeed, MaximumAnimationSpeed)); }
+
+        public bool FastMode
+        {
+            get => _fastMode;
+            set
+            {
+                if (Set(ref _fastMode, value))
+                    Status = value ? "Fast mode ON (no per-step delay)." : "Fast mode OFF.";
+            }
+        }
+
         public string Status { get => _status; private set => Set(ref _status, value); }
         public string AlgorithmName { get => _algorithmName; private set => Set(ref _algorithmName, value); }
         public string DecisionTime { get => _decisionTime; private set => Set(ref _decisionTime, value); }
@@ -107,7 +121,7 @@ namespace Caterpillar.ViewModels
             AlgorithmName = algorithm.Name;
             Status = $"{algorithm.Name}: preparing...";
 
-            var cacheKey = $"{algorithm.Name}:{StepsLimit}:{_initialBoard.LayoutKey}";
+            var cacheKey = $"QLearning:{StepsLimit}:{_initialBoard.LayoutKey}";
             if (algorithm is QLearningAgent && _qLearningCache.TryGetValue(cacheKey, out var preparedAgent))
             {
                 algorithm = preparedAgent;
@@ -131,9 +145,12 @@ namespace Caterpillar.ViewModels
                         _qLearningCache[cacheKey] = prepared;
                     DecisionTime = $"Decision time: {elapsed:F3} ms";
                 }
-                Status = $"{algorithm.Name}: running";
+                Status = $"{algorithm.Name}: running{(FastMode ? " (fast)" : "")}";
 
                 var executionTimer = Stopwatch.StartNew();
+                var lastStep = 0;
+                var lastAte = false;
+
                 for (var step = 0; step < StepsLimit && _activeBoard.ApplesRemaining > 0 && runId == _runId; step++)
                 {
                     token.ThrowIfCancellationRequested();
@@ -146,20 +163,40 @@ namespace Caterpillar.ViewModels
                     StepsTaken++;
                     if (ate)
                         ApplesEaten++;
+                    lastStep = step;
+                    lastAte = ate;
+
                     if (runId != _runId)
                         break;
-                    RefreshCells();
-                    if (AnimationSpeed > 0)
-                        await Task.Delay(AnimationSpeed, token);
+
+                    if (FastMode)
+                    {
+                        if (step % FastModeVisualStride == 0)
+                            RefreshCells();
+                        if ((step & 0x3F) == 0)
+                            await Task.Yield();
+                    }
                     else
-                        await Task.Yield();
+                    {
+                        RefreshCells();
+                        if (AnimationSpeed > 0)
+                            await Task.Delay(AnimationSpeed, token);
+                        else
+                            await Task.Yield();
+                    }
                 }
+
+                RefreshCells();
+
                 executionTimer.Stop();
                 ExecutingTime = $"Executing time: {executionTimer.ElapsedMilliseconds} ms";
                 if (runId == _runId)
+                {
+                    var mode = FastMode ? " [fast]" : "";
                     Status = _activeBoard.ApplesRemaining == 0
-                        ? $"{algorithm.Name}: all apples collected"
-                        : $"{algorithm.Name}: finished at step limit";
+                        ? $"{algorithm.Name}: all apples collected{mode}"
+                        : $"{algorithm.Name}: finished at step limit{mode}";
+                }
             }
             catch (OperationCanceledException)
             {
