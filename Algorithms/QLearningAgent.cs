@@ -312,11 +312,9 @@ namespace Caterpillar.Algorithms
                 if (!_workerMode && ep > 0 && ep % EvaluationInterval == 0)
                 {
                     var score = EvaluatePolicy(board, evaluationSteps, cancellationToken);
-                    Log($"[Worker] eval at ep={ep}: score={score}/{evaluationSteps}.");
                     progress?.Report($"QLearning: accuracy {score}/{evaluationSteps} ({AccuracyPercent(score, evaluationSteps):F1}%) after {ep} episodes.");
                     if (score >= targetApples)
                     {
-                        Log($"[Worker] target reached at ep={ep} — stopping training.");
                         break;
                     }
                 }
@@ -397,57 +395,41 @@ namespace Caterpillar.Algorithms
                 }
             }
 
-            Log($"[Worker] training loop done. states={_q.Count}.");
-
-            // ---------- SINGLE-AGENT SAVE ----------
             if (!_workerMode)
             {
-                Log("[Train] running final evaluation...");
                 var finalScore = EvaluatePolicy(board, evaluationSteps, cancellationToken);
-                Log($"[Train] final score = {finalScore}/{evaluationSteps}.");
                 progress?.Report($"QLearning: final accuracy {finalScore}/{evaluationSteps} ({AccuracyPercent(finalScore, evaluationSteps):F1}%).");
 
-                Log("[Train] saving table + path...");
                 try
                 {
                     SaveToFile(plainTable);
                     SaveToFile(bestTable);
-                    Log($"[Train] tables saved. bestTable exists={File.Exists(bestTable)}, plainTable exists={File.Exists(plainTable)}.");
-
-                    Log("[Train] building replay path...");
+                    
                     BuildCachedPath(board, evaluationSteps);
-                    Log($"[Train] BuildCachedPath -> {_cachedPath.Count} moves.");
 
                     SavePathToFile(plainPath);
                     SavePathToFile(bestPath);
-                    Log($"[Train] after path save: bestPath exists={File.Exists(bestPath)}, plainPath exists={File.Exists(plainPath)}.");
                     progress?.Report($"QLearning: saved {_q.Count} states + {_cachedPath.Count}-move path.");
                 }
                 catch (Exception ex)
                 {
-                    LogException("[Train] save", ex);
+                    Console.WriteLine("[Train] save", ex);
                 }
             }
 
-            Log("[Train] ready.");
             progress?.Report("QLearning: ready.");
         }
 
-        // ---------------- Path building & persistence ----------------
 
         private void SavePathFromCurrentTable(GameBoard board, int steps, string bestPath, string plainPath)
         {
-            Log("[Fallback] building path from current in-memory table...");
             BuildCachedPath(board, steps);
-            Log($"[Fallback] BuildCachedPath -> {_cachedPath.Count} moves.");
             SavePathToFile(bestPath);
             SavePathToFile(plainPath);
-            Log($"[Fallback] after save: bestPath={File.Exists(bestPath)}, plainPath={File.Exists(plainPath)}.");
         }
 
         private void BuildCachedPath(GameBoard source, int steps)
         {
-            Log($"[BuildPath] START: {source.Rows}x{source.Cols}, head={source.CaterpillarHead}, apples={source.ApplesRemaining}, steps={steps}.");
             _cachedPath.Clear();
             var board = new GameBoard(source);
             ResetRuntimeState();
@@ -463,16 +445,14 @@ namespace Caterpillar.Algorithms
                 _cachedPath.Add(next);
                 if (!board.TryMoveCaterpillarTo(next, out var ate))
                 {
-                    Log($"[BuildPath] STOP: TryMoveCaterpillarTo failed at step {step} (head={current}, next={next}). Keeping {_cachedPath.Count} entries.");
-                    _cachedPath.RemoveAt(_cachedPath.Count - 1);
+                   _cachedPath.RemoveAt(_cachedPath.Count - 1);
                     break;
                 }
                 movesApplied++;
                 if (ate) applesEaten++;
             }
 
-            Log($"[BuildPath] END: attempted={movesAttempted}, applied={movesApplied}, applesEaten={applesEaten}, pathLength={_cachedPath.Count}, applesLeft={board.ApplesRemaining}.");
-            ResetRuntimeState();
+             ResetRuntimeState();
         }
 
         private sealed class PathEntry
@@ -485,7 +465,6 @@ namespace Caterpillar.Algorithms
         {
             if (string.IsNullOrEmpty(path))
             {
-                Log("[SavePath] path is null/empty — skipping.");
                 return;
             }
             try
@@ -494,30 +473,25 @@ namespace Caterpillar.Algorithms
                 var json = JsonSerializer.Serialize(entries);
                 File.WriteAllText(path, json);
                 var exists = File.Exists(path);
-                Log($"[SavePath] OK '{Path.GetFullPath(path)}': entries={entries.Count}, bytes={json.Length}, existsAfter={exists}.");
             }
             catch (Exception ex)
             {
-                LogException($"[SavePath] FAILED '{path}'", ex);
+                Console.WriteLine($"[SavePath] FAILED '{path}'", ex);
             }
         }
 
         private void LoadPathFromFile(string path)
         {
-            Log($"[LoadPath] attempting '{path}' (exists={File.Exists(path)}).");
             _cachedPath.Clear();
             if (string.IsNullOrEmpty(path) || !File.Exists(path))
             {
-                Log("[LoadPath] file missing — Run will fall back.");
                 return;
             }
             try
             {
                 var json = File.ReadAllText(path);
-                Log($"[LoadPath] read {json.Length} chars.");
                 if (string.IsNullOrWhiteSpace(json))
                 {
-                    Log("[LoadPath] file empty.");
                     return;
                 }
 
@@ -525,31 +499,27 @@ namespace Caterpillar.Algorithms
                 if (entries != null && entries.Count > 0)
                 {
                     foreach (var e in entries) _cachedPath.Add((e.X, e.Y));
-                    Log($"[LoadPath] OK (new format): {_cachedPath.Count} entries.");
                     return;
                 }
 
-                Log("[LoadPath] new format empty; trying legacy tuple format...");
                 var legacy = JsonSerializer.Deserialize<List<Dictionary<string, int>>>(json);
                 if (legacy != null)
                 {
                     foreach (var d in legacy)
                         if (d.TryGetValue("Item1", out var x) && d.TryGetValue("Item2", out var y))
                             _cachedPath.Add((x, y));
-                    Log($"[LoadPath] legacy format: {_cachedPath.Count} entries.");
                 }
                 else
                 {
-                    Log("[LoadPath] legacy deserialization returned null.");
+                    Console.WriteLine("[LoadPath] legacy deserialization returned null.");
                 }
             }
             catch (Exception ex)
             {
-                LogException($"[LoadPath] FAILED '{path}'", ex);
+                Console.WriteLine($"[LoadPath] FAILED '{path}'", ex);
             }
         }
 
-        // ---------------- Core move selection ----------------
 
         public (int x, int y) GetNextMove(GameBoard board, (int x, int y) currentHead, (int x, int y)? lastPos)
         {
@@ -577,7 +547,7 @@ namespace Caterpillar.Algorithms
         private (int x, int y) GetRunMove(GameBoard board, (int x, int y) currentHead, (int x, int y)? lastPos)
         {
             if (_replayIndex == 0)
-                Log($"[RunMove] first step: path={_cachedPath.Count}, head={currentHead}.");
+                Console.WriteLine($"[RunMove] first step: path={_cachedPath.Count}, head={currentHead}.");
 
             while (_replayIndex < _cachedPath.Count)
             {
@@ -587,6 +557,7 @@ namespace Caterpillar.Algorithms
                     _replayIndex++;
                     continue;
                 }
+
                 var target = _cachedPath[_replayIndex];
                 if (board.IsValidMove(target))
                 {
@@ -594,12 +565,11 @@ namespace Caterpillar.Algorithms
                     _stepsTaken++;
                     return target;
                 }
-                Log($"[RunMove] invalid replay target {target} at idx={_replayIndex} (head={currentHead}); skipping.");
+
+                Console.WriteLine($"[RunMove] invalid replay target {target} at idx={_replayIndex} (head={currentHead}); skipping.");
                 _replayIndex++;
             }
-
-            if (_replayIndex == _cachedPath.Count && _replayIndex > 0)
-                Log($"[RunMove] path exhausted at idx={_replayIndex}; falling back to greedy.");
+                Console.WriteLine($"[RunMove] path exhausted at idx={_replayIndex}; falling back to greedy.");
 
             return GetGreedyRunMove(board, currentHead, lastPos);
         }
@@ -729,7 +699,6 @@ namespace Caterpillar.Algorithms
             return choice.pos;
         }
 
-        // ---------------- Standard Q-table persistence ----------------
 
         public void SaveToFile(string path)
         {
@@ -738,11 +707,10 @@ namespace Caterpillar.Algorithms
                 var dict = _q.ToDictionary();
                 var txt = JsonSerializer.Serialize(dict);
                 File.WriteAllText(path, txt);
-                Log($"[SaveTable] OK '{Path.GetFullPath(path)}': states={dict.Count}, bytes={txt.Length}, existsAfter={File.Exists(path)}.");
-            }
+                }
             catch (Exception ex)
             {
-                LogException($"[SaveTable] FAILED '{path}'", ex);
+                Console.WriteLine($"[SaveTable] FAILED '{path}'", ex);
             }
         }
 
@@ -752,17 +720,14 @@ namespace Caterpillar.Algorithms
             var dict = JsonSerializer.Deserialize<Dictionary<string, double[]>>(txt);
             if (dict == null)
             {
-                Log($"[LoadTable] null result from '{path}'.");
                 return;
             }
 
             var normalized = new Dictionary<string, double[]>(dict.Count);
             foreach (var pair in dict) normalized[pair.Key] = EnsureQValues(pair.Value);
             _q.LoadFromDictionary(normalized);
-            Log($"[LoadTable] '{Path.GetFileName(path)}': {dict.Count} states loaded into table.");
         }
 
-        // ---------------- Helpers ----------------
 
         private int GetAction((int x, int y) from, (int x, int y) to)
         {
@@ -1003,21 +968,21 @@ namespace Caterpillar.Algorithms
             return false;
         }
 
-        private static int CountFreeAreaAfterMove(GameBoard board, (int x, int y) candidate)
-        {
-            var simulated = new GameBoard(board);
-            if (!simulated.IsValidMove(candidate)) return 0;
-            simulated.MoveCaterpillarTo(candidate);
-            return CountFreeArea(simulated, simulated.CaterpillarHead);
-        }
+        //private static int CountFreeAreaAfterMove(GameBoard board, (int x, int y) candidate)
+        //{
+        //    var simulated = new GameBoard(board);
+        //    if (!simulated.IsValidMove(candidate)) return 0;
+        //    simulated.MoveCaterpillarTo(candidate);
+        //    return CountFreeArea(simulated, simulated.CaterpillarHead);
+        //}
 
-        private static int SafetyScore(GameBoard board, (int x, int y) candidate)
-        {
-            var simulated = new GameBoard(board);
-            if (!simulated.IsValidMove(candidate)) return int.MinValue / 4;
-            simulated.MoveCaterpillarTo(candidate);
-            return SafetyDepth(simulated, 4, new HashSet<(int x, int y)>());
-        }
+        //private static int SafetyScore(GameBoard board, (int x, int y) candidate)
+        //{
+        //    var simulated = new GameBoard(board);
+        //    if (!simulated.IsValidMove(candidate)) return int.MinValue / 4;
+        //    simulated.MoveCaterpillarTo(candidate);
+        //    return SafetyDepth(simulated, 4, new HashSet<(int x, int y)>());
+        //}
 
         private static int SafetyDepth(GameBoard board, int depth, HashSet<(int x, int y)> path)
         {
@@ -1060,37 +1025,37 @@ namespace Caterpillar.Algorithms
             yield return (position.x, position.y + 1);
         }
 
-        private (int x, int y)? FindNextFruitMove(GameBoard board, (int x, int y) start)
-        {
-            var queue = new Queue<(int x, int y)>();
-            var visited = new HashSet<(int x, int y)> { start };
-            var parent = new Dictionary<(int x, int y), (int x, int y)>();
-            queue.Enqueue(start);
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                var neighbors = new[]
-                {
-                    (current.x - 1, current.y),
-                    (current.x + 1, current.y),
-                    (current.x, current.y - 1),
-                    (current.x, current.y + 1)
-                };
-                foreach (var next in neighbors)
-                {
-                    if (!IsFree(board, next) || !visited.Add(next)) continue;
-                    parent[next] = current;
-                    if (board.IsFruit(next))
-                    {
-                        var step = next;
-                        while (parent[step] != start) step = parent[step];
-                        return step;
-                    }
-                    queue.Enqueue(next);
-                }
-            }
-            return null;
-        }
+        //private (int x, int y)? FindNextFruitMove(GameBoard board, (int x, int y) start)
+        //{
+        //    var queue = new Queue<(int x, int y)>();
+        //    var visited = new HashSet<(int x, int y)> { start };
+        //    var parent = new Dictionary<(int x, int y), (int x, int y)>();
+        //    queue.Enqueue(start);
+        //    while (queue.Count > 0)
+        //    {
+        //        var current = queue.Dequeue();
+        //        var neighbors = new[]
+        //        {
+        //            (current.x - 1, current.y),
+        //            (current.x + 1, current.y),
+        //            (current.x, current.y - 1),
+        //            (current.x, current.y + 1)
+        //        };
+        //        foreach (var next in neighbors)
+        //        {
+        //            if (!IsFree(board, next) || !visited.Add(next)) continue;
+        //            parent[next] = current;
+        //            if (board.IsFruit(next))
+        //            {
+        //                var step = next;
+        //                while (parent[step] != start) step = parent[step];
+        //                return step;
+        //            }
+        //            queue.Enqueue(next);
+        //        }
+        //    }
+        //    return null;
+        //}
 
         private static bool IsFree(GameBoard board, (int x, int y) position)
         {
