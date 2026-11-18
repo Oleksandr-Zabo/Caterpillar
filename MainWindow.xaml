@@ -53,7 +53,7 @@
                         <TextBox Text="{Binding AnimationSpeed, UpdateSourceTrigger=PropertyChanged}" />
                         <TextBlock Text="Steps limit" Margin="0,8,0,2" />
                         <TextBox Text="{Binding StepsLimit, UpdateSourceTrigger=PropertyChanged}" />
-                        <CheckBox Content="Fast mode" IsChecked="{Binding FastMode, Mode=TwoWay}" Margin="0,8,0,2"/>
+                       
                     </StackPanel>
                 </GroupBox>
 
